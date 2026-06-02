@@ -134,7 +134,7 @@
    WIDGETS — only enable what we use
    ========================================================================= */
 #define LV_USE_ARC       0
-#define LV_USE_BAR       0
+#define LV_USE_BAR       1   /* RSSI threshold overlay */
 #define LV_USE_BTN       0
 #define LV_USE_BTNMATRIX 0
 #define LV_USE_CANVAS    0

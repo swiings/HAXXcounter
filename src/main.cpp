@@ -6,10 +6,8 @@
 #include "counter.h"
 
 /* =========================================================================
-   Button
-   GPIO0 is the physical BOOT button on the Waveshare ESP32-S3-Touch-AMOLED-1.8
-   (GPIO9 is I2S BCLK for the audio codec — not a button).
-   Active-low; internal pull-up enabled.
+   Boot button — GPIO0, active-low
+   Toggles all-devices / people-estimate mode.
    ========================================================================= */
 #define PIN_BOOT_BTN 0
 
@@ -18,15 +16,37 @@ static uint32_t g_btn_time_ms = 0;
 
 static void button_poll() {
     int btn = digitalRead(PIN_BOOT_BTN);
-
     if (btn == LOW && g_btn_last == HIGH &&
         (millis() - g_btn_time_ms) > 200) {
-
         g_btn_time_ms = millis();
         counter_toggle_mode();
         ui_set_footer(counter_mode_label());
     }
     g_btn_last = btn;
+}
+
+/* =========================================================================
+   Touch gesture — swipe up/down adjusts RSSI threshold
+   ========================================================================= */
+static void gesture_poll() {
+    TouchGesture g = display_pop_gesture();
+    if (g == GESTURE_NONE) return;
+
+    int cur = counter_get_rssi();
+    int next;
+
+    if (g == GESTURE_SWIPE_UP) {
+        /* Swipe up → tighten (higher threshold = closer devices only) */
+        next = min(RSSI_MAX, cur + RSSI_STEP);
+    } else {
+        /* Swipe down → loosen (lower threshold = farther devices included) */
+        next = max(RSSI_MIN, cur - RSSI_STEP);
+    }
+
+    if (next != cur) {
+        counter_set_rssi(next);
+        ui_show_rssi_overlay(next);
+    }
 }
 
 /* =========================================================================
@@ -43,13 +63,15 @@ void setup() {
     counter_init();
 
     ui_set_footer(counter_mode_label());
-    Serial.println("[HAXXcounter] ready");
+    Serial.printf("[HAXXcounter] ready  RSSI threshold: %d dBm\n",
+                  counter_get_rssi());
 }
 
 void loop() {
     lv_timer_handler();
     counter_tick();
     button_poll();
+    gesture_poll();
     ui_set_count(counter_get());
     delay(5);
 }

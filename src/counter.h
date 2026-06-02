@@ -13,31 +13,22 @@ enum CounterMode {
     MODE_PHONE_ESTIMATE  /* count only randomised MACs (phones / tablets) */
 };
 
-/**
- * Start passive WiFi probe-request sniffing (channel-hopping) and
- * BLE advertisement scanning.  Populates the shared MAC table.
- * Must be called from setup() after Serial is ready.
- */
+/** RSSI threshold — frames weaker than this value are ignored.
+ *  -60 = same room only  |  -80 = medium (default)  |  -95 = through walls */
+constexpr int RSSI_DEFAULT =  -80;
+constexpr int RSSI_MIN     =  -95;
+constexpr int RSSI_MAX     =  -60;
+constexpr int RSSI_STEP    =    5;
+
 void counter_init();
-
-/** Return number of unique MACs seen within the last DEDUP_WINDOW_MS ms. */
 uint32_t counter_get();
-
-/**
- * Housekeeping — evict stale MACs, hop the WiFi channel, trigger burst scan.
- * Call from loop() on every iteration (cheap; skips work unless due).
- */
 void counter_tick();
-
-/**
- * Toggle between MODE_ALL_DEVICES and MODE_PHONE_ESTIMATE.
- * Clears the MAC table and fires an immediate burst scan so the new
- * count reflects the current environment without waiting 60 s.
- */
 void counter_toggle_mode();
-
-/** Returns the active CounterMode. */
 CounterMode counter_get_mode();
-
-/** Human-readable label for the current mode ("all devices" / "people estimate"). */
 const char *counter_mode_label();
+
+/** Set the RSSI threshold (clamped to RSSI_MIN..RSSI_MAX). */
+void counter_set_rssi(int dbm);
+
+/** Returns the current RSSI threshold in dBm. */
+int  counter_get_rssi();

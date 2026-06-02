@@ -13,9 +13,10 @@
 #include <NimBLEAdvertisedDevice.h>
 
 /* =========================================================================
-   Mode
+   Mode and RSSI threshold
    ========================================================================= */
-static CounterMode g_mode = MODE_ALL_DEVICES;
+static CounterMode g_mode           = MODE_ALL_DEVICES;
+static int         g_rssi_threshold = RSSI_DEFAULT;
 
 /* Returns true if this MAC should be counted in the current mode.
  * first_byte is the first byte of the MAC in standard (big-endian) notation.
@@ -79,6 +80,9 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf,
     if (FC_TYPE(frame[0]) != MGMT_TYPE) return;
     if (FC_SUBTYPE(frame[0]) != PROBE_REQ_SUB) return;
 
+    /* Drop frames below the RSSI threshold (too far away) */
+    if (pkt->rx_ctrl.rssi < g_rssi_threshold) return;
+
     /* In 802.11 frames the source MAC is in big-endian order;
      * frame[SRC_MAC_OFFSET] is the first byte (the OUI/flag byte). */
     if (!mac_passes_filter(frame[SRC_MAC_OFFSET])) return;
@@ -120,8 +124,10 @@ static void wifi_init() {
    ========================================================================= */
 class HAXXScanCallbacks : public NimBLEScanCallbacks {
     void onDiscovered(const NimBLEAdvertisedDevice *dev) override {
-        /* In phone-estimate mode ignore public (hardware) BLE addresses —
-         * headphones, LoRa radios, and appliances all use public MACs. */
+        /* Drop devices below the RSSI threshold */
+        if (dev->getRSSI() < g_rssi_threshold) return;
+
+        /* In phone-estimate mode ignore public (hardware) BLE addresses */
         if (g_mode == MODE_PHONE_ESTIMATE &&
             dev->getAddress().isPublic()) return;
 
@@ -278,3 +284,14 @@ const char *counter_mode_label() {
     return (g_mode == MODE_PHONE_ESTIMATE) ? "people estimate"
                                            : "all devices";
 }
+
+void counter_set_rssi(int dbm) {
+    g_rssi_threshold = constrain(dbm, RSSI_MIN, RSSI_MAX);
+    /* Clear the table so stale entries from the old threshold are removed */
+    mac_clear();
+    g_last_burst_ms = millis();
+    xTaskNotifyGive(g_burst_task);
+    Serial.printf("[counter] RSSI threshold → %d dBm\n", g_rssi_threshold);
+}
+
+int counter_get_rssi() { return g_rssi_threshold; }

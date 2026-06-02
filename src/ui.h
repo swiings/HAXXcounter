@@ -16,3 +16,10 @@ void ui_set_count(uint32_t count);
 
 /** Replace the bottom label text (e.g. "all devices" / "people estimate"). */
 void ui_set_footer(const char *text);
+
+/**
+ * Show a centred RSSI threshold overlay for 2 seconds then auto-hide.
+ * Displays the threshold value on a close↔far bar.
+ * Safe to call repeatedly; resets the 2 s timer each time.
+ */
+void ui_show_rssi_overlay(int dbm);
