@@ -1,0 +1,13 @@
+# PlatformIO — build artifacts and auto-downloaded libraries
+.pio/
+
+# macOS metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Python
+__pycache__/
+*.py[cod]
