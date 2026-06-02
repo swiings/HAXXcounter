@@ -75,9 +75,10 @@ static lv_obj_t *make_edge_strip(lv_obj_t *parent, int x,
     lv_obj_set_style_border_width(track, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(track, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(track, 0, LV_PART_MAIN);
+    lv_obj_add_flag(track, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
-    /* Extend the hit area so the 3 px strip is actually tappable */
-    lv_obj_set_ext_click_area(track, 11);   /* 3 + 11 + 11 = 25 px total */
+    /* 3 px visual + 25 px each side = 53 px total touch target */
+    lv_obj_set_ext_click_area(track, 25);
 
     lv_obj_t *fill = lv_obj_create(track);
     lv_obj_set_style_bg_color(fill, fill_col, LV_PART_MAIN);
