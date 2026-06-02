@@ -13,3 +13,6 @@ void ui_init();
 
 /** Refresh the centre counter label to show the new value. */
 void ui_set_count(uint32_t count);
+
+/** Replace the bottom label text (e.g. "all devices" / "people estimate"). */
+void ui_set_footer(const char *text);

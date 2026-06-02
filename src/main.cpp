@@ -1,17 +1,20 @@
 #include <Arduino.h>
 #include <driver/gpio.h>
+#include <lvgl.h>
 
 #include "display.h"
 #include "ui.h"
 #include "counter.h"
 
 /* =========================================================================
-   GPIO stubs
+   GPIO stubs / button
    ========================================================================= */
-#define PIN_BOOT_BTN 9   /* User-specified BOOT / user button */
+#define PIN_BOOT_BTN 9   /* user-specified BOOT / user button, active-low */
 
-static void gpio_stubs_init() {
-    /* BOOT button — input with internal pull-up; active-low */
+static bool     g_btn_last    = HIGH;
+static uint32_t g_btn_time_ms = 0;
+
+static void gpio_init_all() {
     gpio_config_t cfg = {};
     cfg.pin_bit_mask = (1ULL << PIN_BOOT_BTN);
     cfg.mode         = GPIO_MODE_INPUT;
@@ -19,7 +22,21 @@ static void gpio_stubs_init() {
     cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
     cfg.intr_type    = GPIO_INTR_DISABLE;
     gpio_config(&cfg);
-    /* TODO: attach an interrupt or poll in loop() to handle button press */
+}
+
+/* Poll the boot button with a 200 ms debounce.
+ * On press: toggle the counter mode and update the footer label. */
+static void button_poll() {
+    bool btn = (bool)gpio_get_level((gpio_num_t)PIN_BOOT_BTN);
+
+    if (btn == LOW && g_btn_last == HIGH &&
+        (millis() - g_btn_time_ms) > 200) {
+
+        g_btn_time_ms = millis();
+        counter_toggle_mode();
+        ui_set_footer(counter_mode_label());
+    }
+    g_btn_last = btn;
 }
 
 /* =========================================================================
@@ -27,26 +44,24 @@ static void gpio_stubs_init() {
    ========================================================================= */
 void setup() {
     Serial.begin(115200);
-    delay(200);   /* allow serial monitor to attach */
+    delay(200);
     Serial.println("\n[HAXXcounter] booting");
 
-    gpio_stubs_init();
+    gpio_init_all();
     display_init();
     ui_init();
     counter_init();
+
+    /* Sync the footer label to whatever mode counter starts in */
+    ui_set_footer(counter_mode_label());
 
     Serial.println("[HAXXcounter] ready");
 }
 
 void loop() {
-    /* LVGL timer handler — drives animations, label redraws, etc. */
     lv_timer_handler();
-
-    /* WiFi channel hop + MAC table eviction */
     counter_tick();
-
-    /* Refresh the displayed count */
+    button_poll();
     ui_set_count(counter_get());
-
-    delay(5);   /* yield ~5 ms so FreeRTOS tasks (WiFi, BLE) can run */
+    delay(5);
 }

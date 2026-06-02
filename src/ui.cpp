@@ -4,25 +4,23 @@
 #include "display.h"   /* DISPLAY_WIDTH, DISPLAY_HEIGHT */
 
 /* Impact fonts sized to fit worst-case digit strings within DISPLAY_WIDTH.
- * Breakpoints chosen so even "88"/"888"/"8888" never clip.
- *   1 digit  → 360 px  (worst "8"  = 192 px wide)
- *   2 digits → 316 px  (worst "88" = 339 px wide with 8 % margin)
- *   3 digits → 211 px  (worst "888"= 339 px wide with 8 % margin)
- *   4+ digits→ 158 px  (worst "8888"=339 px wide with 8 % margin)
+ *   1 digit  → 360 px    2 digits → 316 px
+ *   3 digits → 211 px    4+ digits → 158 px
  */
-extern const lv_font_t font_counter;      /* 360 px */
-extern const lv_font_t font_counter_2d;   /* 316 px */
-extern const lv_font_t font_counter_3d;   /* 211 px */
-extern const lv_font_t font_counter_4d;   /* 158 px */
+extern const lv_font_t font_counter;
+extern const lv_font_t font_counter_2d;
+extern const lv_font_t font_counter_3d;
+extern const lv_font_t font_counter_4d;
 
 static const lv_font_t *font_for_count(uint32_t n) {
-    if (n < 10)    return &font_counter;
-    if (n < 100)   return &font_counter_2d;
-    if (n < 1000)  return &font_counter_3d;
-    return         &font_counter_4d;
+    if (n < 10)   return &font_counter;
+    if (n < 100)  return &font_counter_2d;
+    if (n < 1000) return &font_counter_3d;
+    return        &font_counter_4d;
 }
 
-static lv_obj_t *g_count_label = nullptr;
+static lv_obj_t *g_count_label  = nullptr;
+static lv_obj_t *g_footer_label = nullptr;
 static char      g_count_buf[16];
 
 static lv_obj_t *make_label_backdrop(lv_obj_t *parent,
@@ -58,20 +56,20 @@ void ui_init() {
     lv_obj_set_style_text_color(title, lv_color_hex(0xC0C0FF), LV_PART_MAIN);
     lv_obj_center(title);
 
-    /* Main count label — font swapped dynamically in ui_set_count() */
+    /* Main count label */
     g_count_label = lv_label_create(scr);
     lv_label_set_text(g_count_label, "0");
     lv_obj_set_style_text_font(g_count_label, font_for_count(0), LV_PART_MAIN);
     lv_obj_set_style_text_color(g_count_label, lv_color_white(), LV_PART_MAIN);
     lv_obj_center(g_count_label);
 
-    /* "nearby devices" footer */
+    /* Footer — shows active mode, updated by ui_set_footer() */
     lv_obj_t *footer_box = make_label_backdrop(scr, LV_ALIGN_BOTTOM_MID, -14);
-    lv_obj_t *footer = lv_label_create(footer_box);
-    lv_label_set_text(footer, "nearby devices");
-    lv_obj_set_style_text_font(footer, &lv_font_montserrat_22, LV_PART_MAIN);
-    lv_obj_set_style_text_color(footer, lv_color_hex(0x80C0FF), LV_PART_MAIN);
-    lv_obj_center(footer);
+    g_footer_label = lv_label_create(footer_box);
+    lv_label_set_text(g_footer_label, "all devices");
+    lv_obj_set_style_text_font(g_footer_label, &lv_font_montserrat_22, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_footer_label, lv_color_hex(0x80C0FF), LV_PART_MAIN);
+    lv_obj_center(g_footer_label);
 }
 
 void ui_set_count(uint32_t count) {
@@ -79,5 +77,11 @@ void ui_set_count(uint32_t count) {
     snprintf(g_count_buf, sizeof(g_count_buf), "%lu", (unsigned long)count);
     lv_obj_set_style_text_font(g_count_label, font_for_count(count), LV_PART_MAIN);
     lv_label_set_text(g_count_label, g_count_buf);
-    lv_obj_center(g_count_label);   /* re-centre after font/text change */
+    lv_obj_center(g_count_label);
+}
+
+void ui_set_footer(const char *text) {
+    if (!g_footer_label) return;
+    lv_label_set_text(g_footer_label, text);
+    lv_obj_center(g_footer_label);
 }

@@ -13,8 +13,22 @@
 #include <NimBLEAdvertisedDevice.h>
 
 /* =========================================================================
-   MAC table — maps MAC string → last-seen millis()
-   Written from WiFi sniffer task, NimBLE host task, and burst scan task.
+   Mode
+   ========================================================================= */
+static CounterMode g_mode = MODE_ALL_DEVICES;
+
+/* Returns true if this MAC should be counted in the current mode.
+ * first_byte is the first byte of the MAC in standard (big-endian) notation.
+ * Bit 1 of that byte is the IEEE "locally administered" flag, set by devices
+ * that generate their own random address (phones, tablets). Hardware-assigned
+ * OUI MACs (headphones, LoRa radios, APs, IoT) have this bit clear. */
+static inline bool mac_passes_filter(uint8_t first_byte) {
+    if (g_mode == MODE_ALL_DEVICES) return true;
+    return (first_byte & 0x02) != 0;   /* locally administered = random MAC */
+}
+
+/* =========================================================================
+   MAC table
    ========================================================================= */
 static std::map<std::string, uint32_t> g_macs;
 static SemaphoreHandle_t g_mac_mutex = nullptr;
@@ -22,6 +36,13 @@ static SemaphoreHandle_t g_mac_mutex = nullptr;
 static void mac_upsert(const std::string &key) {
     if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE) {
         g_macs[key] = millis();
+        xSemaphoreGive(g_mac_mutex);
+    }
+}
+
+static void mac_clear() {
+    if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE) {
+        g_macs.clear();
         xSemaphoreGive(g_mac_mutex);
     }
 }
@@ -58,8 +79,12 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf,
     if (FC_TYPE(frame[0]) != MGMT_TYPE) return;
     if (FC_SUBTYPE(frame[0]) != PROBE_REQ_SUB) return;
 
-    const uint8_t *m = frame + SRC_MAC_OFFSET;
+    /* In 802.11 frames the source MAC is in big-endian order;
+     * frame[SRC_MAC_OFFSET] is the first byte (the OUI/flag byte). */
+    if (!mac_passes_filter(frame[SRC_MAC_OFFSET])) return;
+
     char buf18[18];
+    const uint8_t *m = frame + SRC_MAC_OFFSET;
     snprintf(buf18, sizeof(buf18), "%02x:%02x:%02x:%02x:%02x:%02x",
              m[0], m[1], m[2], m[3], m[4], m[5]);
     mac_upsert(buf18);
@@ -91,10 +116,15 @@ static void wifi_init() {
 }
 
 /* =========================================================================
-   BLE — passive scan for advertisement packets
+   BLE — passive scan
    ========================================================================= */
 class HAXXScanCallbacks : public NimBLEScanCallbacks {
     void onDiscovered(const NimBLEAdvertisedDevice *dev) override {
+        /* In phone-estimate mode ignore public (hardware) BLE addresses —
+         * headphones, LoRa radios, and appliances all use public MACs. */
+        if (g_mode == MODE_PHONE_ESTIMATE &&
+            dev->getAddress().isPublic()) return;
+
         mac_upsert(dev->getAddress().toString());
     }
 };
@@ -118,13 +148,7 @@ static void ble_init() {
 }
 
 /* =========================================================================
-   Burst scan task — fires every BURST_INTERVAL_MS.
-   1. Restarts BLE scan: resets the hardware duplicate filter so every
-      nearby advertising device is re-reported and its timestamp refreshed.
-   2. Runs a brief active WiFi scan: broadcasts probe requests that
-      stimulate nearby APs and fixed-MAC devices to respond.
-   Runs in its own FreeRTOS task so the ~2-3 s WiFi scan doesn't stall
-   the display.
+   Burst scan task
    ========================================================================= */
 static TaskHandle_t g_burst_task = nullptr;
 
@@ -133,24 +157,21 @@ static uint8_t g_channel = 1;
 
 static void burst_scan_task(void *) {
     while (true) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   /* sleep until signalled */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        /* ---- 1. BLE restart ---- */
+        /* BLE: stop → clear → restart resets hardware duplicate filter */
         NimBLEScan *ble = NimBLEDevice::getScan();
         ble->stop();
         ble->clearResults();
         ble_start();
 
-        /* ---- 2. WiFi active scan ----
-           Briefly switch to STA mode (required for scanning), sweep all
-           channels with active probes, collect responding MACs, then
-           restore the promiscuous sniffer. */
+        /* WiFi: active scan stimulates nearby devices to respond */
         esp_wifi_set_promiscuous(false);
         esp_wifi_set_mode(WIFI_MODE_STA);
 
         wifi_scan_config_t scan_cfg = {};
         scan_cfg.scan_type            = WIFI_SCAN_TYPE_ACTIVE;
-        scan_cfg.scan_time.active.min = 100;   /* ms per channel */
+        scan_cfg.scan_time.active.min = 100;
         scan_cfg.scan_time.active.max = 200;
 
         if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK) {
@@ -163,6 +184,7 @@ static void burst_scan_task(void *) {
                     esp_wifi_scan_get_ap_records(&n, aps);
                     for (int i = 0; i < n; i++) {
                         const uint8_t *m = aps[i].bssid;
+                        if (!mac_passes_filter(m[0])) continue;
                         char buf[18];
                         snprintf(buf, sizeof(buf),
                                  "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -174,14 +196,13 @@ static void burst_scan_task(void *) {
             }
         }
 
-        /* Restore promiscuous mode on the current hopping channel */
         esp_wifi_set_mode(WIFI_MODE_NULL);
         esp_wifi_set_promiscuous(true);
         esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb);
         esp_wifi_set_channel(g_channel, WIFI_SECOND_CHAN_NONE);
 
-        Serial.printf("[counter] burst complete — %u MACs in window\n",
-                      counter_get());
+        Serial.printf("[counter] burst done — mode=%s  MACs=%u\n",
+                      counter_mode_label(), counter_get());
     }
 }
 
@@ -203,12 +224,9 @@ static void hop_channel() {
 void counter_init() {
     g_mac_mutex = xSemaphoreCreateMutex();
     configASSERT(g_mac_mutex);
-
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-
     wifi_init();
     ble_init();
-
     xTaskCreate(burst_scan_task, "burst_scan", 4096,
                 nullptr, 1, &g_burst_task);
     Serial.println("[counter] burst scan task created");
@@ -230,14 +248,33 @@ void counter_tick() {
         g_last_hop_ms = now;
         hop_channel();
     }
-
     if (now - g_last_evict_ms >= 10'000) {
         g_last_evict_ms = now;
         evict_stale();
     }
-
     if (now - g_last_burst_ms >= BURST_INTERVAL_MS) {
         g_last_burst_ms = now;
         xTaskNotifyGive(g_burst_task);
     }
+}
+
+void counter_toggle_mode() {
+    g_mode = (g_mode == MODE_ALL_DEVICES) ? MODE_PHONE_ESTIMATE
+                                           : MODE_ALL_DEVICES;
+    /* Clear stale data so the count immediately reflects the new filter */
+    mac_clear();
+
+    /* Reset burst timer and fire immediately so fresh results arrive
+     * without waiting up to 60 s */
+    g_last_burst_ms = millis();
+    xTaskNotifyGive(g_burst_task);
+
+    Serial.printf("[counter] mode → %s\n", counter_mode_label());
+}
+
+CounterMode counter_get_mode() { return g_mode; }
+
+const char *counter_mode_label() {
+    return (g_mode == MODE_PHONE_ESTIMATE) ? "people estimate"
+                                           : "all devices";
 }
