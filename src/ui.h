@@ -5,10 +5,13 @@ void ui_init();
 void ui_set_count(uint32_t count);
 void ui_set_footer(const char *text);
 
-/** Brief centred overlay showing current threshold on a close↔far bar (2 s). */
+/** Brief centred overlay: threshold on a far↔close bar, auto-hides 2 s. */
 void ui_show_rssi_overlay(int dbm);
 
-/** Update the left-edge RSSI indicator strip (call after threshold changes). */
+/** Brief centred overlay: battery % on a 0–100 bar, auto-hides 2 s. */
+void ui_show_battery_overlay(int pct);
+
+/** Update the left-edge RSSI indicator strip. */
 void ui_update_rssi_indicator(int dbm);
 
 /** Update the right-edge battery indicator strip (0–100 %). */
