@@ -14,7 +14,7 @@
 
 /* =========================================================================
    MAC table — maps MAC string → last-seen millis()
-   Written from WiFi sniffer task and NimBLE host task; protected by mutex.
+   Written from WiFi sniffer task, NimBLE host task, and burst scan task.
    ========================================================================= */
 static std::map<std::string, uint32_t> g_macs;
 static SemaphoreHandle_t g_mac_mutex = nullptr;
@@ -46,16 +46,14 @@ static void evict_stale() {
 #define FC_SUBTYPE(fc0) (((fc0) >> 4) & 0x0F)
 #define MGMT_TYPE      0
 #define PROBE_REQ_SUB  4
-#define SRC_MAC_OFFSET 10   /* source address offset in any mgmt frame */
+#define SRC_MAC_OFFSET 10
 
 static void IRAM_ATTR wifi_sniffer_cb(void *buf,
                                        wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_MGMT) return;
-
     const wifi_promiscuous_pkt_t *pkt =
         reinterpret_cast<const wifi_promiscuous_pkt_t *>(buf);
     const uint8_t *frame = pkt->payload;
-
     if (pkt->rx_ctrl.sig_len < 24) return;
     if (FC_TYPE(frame[0]) != MGMT_TYPE) return;
     if (FC_SUBTYPE(frame[0]) != PROBE_REQ_SUB) return;
@@ -68,14 +66,12 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf,
 }
 
 static void wifi_init() {
-    /* NVS is required by esp_wifi internals; we never write to flash. */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
         ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
-
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -83,7 +79,6 @@ static void wifi_init() {
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
     ESP_ERROR_CHECK(esp_wifi_start());
-
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
     wifi_promiscuous_filter_t filt = {
@@ -92,7 +87,6 @@ static void wifi_init() {
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filt));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
-
     Serial.println("[counter] WiFi sniffer running");
 }
 
@@ -100,7 +94,6 @@ static void wifi_init() {
    BLE — passive scan for advertisement packets
    ========================================================================= */
 class HAXXScanCallbacks : public NimBLEScanCallbacks {
-    /* Called once per unique advertising address (NimBLE 2.x API) */
     void onDiscovered(const NimBLEAdvertisedDevice *dev) override {
         mac_upsert(dev->getAddress().toString());
     }
@@ -108,26 +101,96 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks {
 
 static HAXXScanCallbacks g_ble_callbacks;
 
+static void ble_start() {
+    NimBLEScan *scan = NimBLEDevice::getScan();
+    scan->setScanCallbacks(&g_ble_callbacks, false);
+    scan->setActiveScan(false);
+    scan->setInterval(100);
+    scan->setWindow(99);
+    scan->start(0, false);
+}
+
 static void ble_init() {
     NimBLEDevice::init("");
     NimBLEDevice::setPower(ESP_PWR_LVL_N0);
-
-    NimBLEScan *scan = NimBLEDevice::getScan();
-    scan->setScanCallbacks(&g_ble_callbacks, false /*no duplicates*/);
-    scan->setActiveScan(false);   /* passive — don't transmit scan requests */
-    scan->setInterval(100);
-    scan->setWindow(99);
-    scan->start(0, false);        /* 0 = scan indefinitely, non-blocking */
-
+    ble_start();
     Serial.println("[counter] BLE scan running");
+}
+
+/* =========================================================================
+   Burst scan task — fires every BURST_INTERVAL_MS.
+   1. Restarts BLE scan: resets the hardware duplicate filter so every
+      nearby advertising device is re-reported and its timestamp refreshed.
+   2. Runs a brief active WiFi scan: broadcasts probe requests that
+      stimulate nearby APs and fixed-MAC devices to respond.
+   Runs in its own FreeRTOS task so the ~2-3 s WiFi scan doesn't stall
+   the display.
+   ========================================================================= */
+static TaskHandle_t g_burst_task = nullptr;
+
+/* Defined in the channel-hopper section; used by burst_scan_task above */
+static uint8_t g_channel = 1;
+
+static void burst_scan_task(void *) {
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   /* sleep until signalled */
+
+        /* ---- 1. BLE restart ---- */
+        NimBLEScan *ble = NimBLEDevice::getScan();
+        ble->stop();
+        ble->clearResults();
+        ble_start();
+
+        /* ---- 2. WiFi active scan ----
+           Briefly switch to STA mode (required for scanning), sweep all
+           channels with active probes, collect responding MACs, then
+           restore the promiscuous sniffer. */
+        esp_wifi_set_promiscuous(false);
+        esp_wifi_set_mode(WIFI_MODE_STA);
+
+        wifi_scan_config_t scan_cfg = {};
+        scan_cfg.scan_type            = WIFI_SCAN_TYPE_ACTIVE;
+        scan_cfg.scan_time.active.min = 100;   /* ms per channel */
+        scan_cfg.scan_time.active.max = 200;
+
+        if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK) {
+            uint16_t n = 0;
+            esp_wifi_scan_get_ap_num(&n);
+            if (n > 0) {
+                auto *aps = static_cast<wifi_ap_record_t *>(
+                    malloc(n * sizeof(wifi_ap_record_t)));
+                if (aps) {
+                    esp_wifi_scan_get_ap_records(&n, aps);
+                    for (int i = 0; i < n; i++) {
+                        const uint8_t *m = aps[i].bssid;
+                        char buf[18];
+                        snprintf(buf, sizeof(buf),
+                                 "%02x:%02x:%02x:%02x:%02x:%02x",
+                                 m[0], m[1], m[2], m[3], m[4], m[5]);
+                        mac_upsert(buf);
+                    }
+                    free(aps);
+                }
+            }
+        }
+
+        /* Restore promiscuous mode on the current hopping channel */
+        esp_wifi_set_mode(WIFI_MODE_NULL);
+        esp_wifi_set_promiscuous(true);
+        esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb);
+        esp_wifi_set_channel(g_channel, WIFI_SECOND_CHAN_NONE);
+
+        Serial.printf("[counter] burst complete — %u MACs in window\n",
+                      counter_get());
+    }
 }
 
 /* =========================================================================
    Channel hopper
    ========================================================================= */
-static uint8_t  g_channel       = 1;
 static uint32_t g_last_hop_ms   = 0;
 static uint32_t g_last_evict_ms = 0;
+static uint32_t g_last_burst_ms = 0;
 
 static void hop_channel() {
     g_channel = (g_channel % 13) + 1;
@@ -141,11 +204,14 @@ void counter_init() {
     g_mac_mutex = xSemaphoreCreateMutex();
     configASSERT(g_mac_mutex);
 
-    /* Ask the firmware to balance radio time between WiFi and BLE */
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 
     wifi_init();
     ble_init();
+
+    xTaskCreate(burst_scan_task, "burst_scan", 4096,
+                nullptr, 1, &g_burst_task);
+    Serial.println("[counter] burst scan task created");
 }
 
 uint32_t counter_get() {
@@ -168,5 +234,10 @@ void counter_tick() {
     if (now - g_last_evict_ms >= 10'000) {
         g_last_evict_ms = now;
         evict_stale();
+    }
+
+    if (now - g_last_burst_ms >= BURST_INTERVAL_MS) {
+        g_last_burst_ms = now;
+        xTaskNotifyGive(g_burst_task);
     }
 }

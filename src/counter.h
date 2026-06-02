@@ -2,7 +2,10 @@
 #include <Arduino.h>
 
 /** Sliding-window duration in milliseconds (120 s) */
-constexpr uint32_t DEDUP_WINDOW_MS = 120'000;
+constexpr uint32_t DEDUP_WINDOW_MS    = 120'000;
+
+/** How often the burst scan fires to refresh nearby device timestamps (60 s) */
+constexpr uint32_t BURST_INTERVAL_MS  =  60'000;
 
 /**
  * Start passive WiFi probe-request sniffing (channel-hopping) and
