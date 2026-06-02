@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <driver/gpio.h>
 #include <lvgl.h>
 
 #include "display.h"
@@ -7,27 +6,18 @@
 #include "counter.h"
 
 /* =========================================================================
-   GPIO stubs / button
+   Button
+   GPIO0 is the physical BOOT button on the Waveshare ESP32-S3-Touch-AMOLED-1.8
+   (GPIO9 is I2S BCLK for the audio codec — not a button).
+   Active-low; internal pull-up enabled.
    ========================================================================= */
-#define PIN_BOOT_BTN 9   /* user-specified BOOT / user button, active-low */
+#define PIN_BOOT_BTN 0
 
-static bool     g_btn_last    = HIGH;
+static int      g_btn_last    = HIGH;
 static uint32_t g_btn_time_ms = 0;
 
-static void gpio_init_all() {
-    gpio_config_t cfg = {};
-    cfg.pin_bit_mask = (1ULL << PIN_BOOT_BTN);
-    cfg.mode         = GPIO_MODE_INPUT;
-    cfg.pull_up_en   = GPIO_PULLUP_ENABLE;
-    cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    cfg.intr_type    = GPIO_INTR_DISABLE;
-    gpio_config(&cfg);
-}
-
-/* Poll the boot button with a 200 ms debounce.
- * On press: toggle the counter mode and update the footer label. */
 static void button_poll() {
-    bool btn = (bool)gpio_get_level((gpio_num_t)PIN_BOOT_BTN);
+    int btn = digitalRead(PIN_BOOT_BTN);
 
     if (btn == LOW && g_btn_last == HIGH &&
         (millis() - g_btn_time_ms) > 200) {
@@ -47,14 +37,12 @@ void setup() {
     delay(200);
     Serial.println("\n[HAXXcounter] booting");
 
-    gpio_init_all();
+    pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
     display_init();
     ui_init();
     counter_init();
 
-    /* Sync the footer label to whatever mode counter starts in */
     ui_set_footer(counter_mode_label());
-
     Serial.println("[HAXXcounter] ready");
 }
 
