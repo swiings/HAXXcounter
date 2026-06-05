@@ -20,12 +20,28 @@ constexpr int RSSI_MIN     =  -95;
 constexpr int RSSI_MAX     =  -45;   /* raised from -60; leaves room for same-room-only tuning */
 constexpr int RSSI_STEP    =    5;
 
+/** Per-interval discovery stats, consumed by counter_pop_stats(). */
+struct CounterStats {
+    uint32_t    table_size;    /* current unique MACs in dedup window */
+    uint32_t    new_wifi;      /* newly-seen WiFi probe MACs this interval */
+    uint32_t    new_ble;       /* newly-seen BLE MACs this interval */
+    uint32_t    evicted;       /* MACs aged out of the dedup window */
+    uint32_t    filtered_wifi; /* WiFi MACs seen but skipped by mode filter */
+    uint32_t    filtered_ble;  /* BLE MACs seen but skipped by mode filter */
+    uint8_t     channel;       /* current WiFi channel */
+    int         rssi;          /* current RSSI threshold */
+    CounterMode mode;
+};
+
 void counter_init();
 uint32_t counter_get();
 void counter_tick();
 void counter_toggle_mode();
 CounterMode counter_get_mode();
 const char *counter_mode_label();
+
+/** Snapshot and reset per-interval discovery counters. */
+CounterStats counter_pop_stats();
 
 /** Set the RSSI threshold (clamped to RSSI_MIN..RSSI_MAX). */
 void counter_set_rssi(int dbm);

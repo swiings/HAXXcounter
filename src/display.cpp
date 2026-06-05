@@ -52,8 +52,21 @@ static lv_indev_drv_t     g_indev_drv;
 /* Touch gesture state */
 static volatile TouchGesture g_pending_gesture = GESTURE_NONE;
 static int16_t  g_touch_start_y  = -1;
+static int16_t  g_touch_start_x  = -1;
 static int16_t  g_touch_last_y   = -1;
 static bool     g_was_touched    = false;
+
+/* Long-press detection */
+#define HOLD_THRESHOLD_MS  500
+#define HOLD_DEADZONE_PX    12
+static uint32_t g_hold_start_ms = 0;
+static bool     g_in_long_press = false;
+
+/* Brightness levels — cycles dim→bright, wraps */
+static const uint8_t k_brightness[]  = {10, 30, 55, 80, 105, 130, 160, 190, 220, 255};
+static const int     k_num_levels    = 10;
+static int           g_bright_idx    = 9;    /* start at 255 (full) */
+static int           g_bright_dir    = -1;   /* -1 = dimming, +1 = brightening */
 
 /* -------------------------------------------------------------------------
    TCA9554 LCD reset
@@ -116,15 +129,18 @@ static void touch_read_cb(lv_indev_drv_t * /*drv*/, lv_indev_data_t *data) {
         g_pending_gesture = GESTURE_SWIPE_DOWN;
 
     if (touches == 0) {
-        /* Touch just lifted — check for software-detected swipe as fallback */
-        if (g_was_touched && g_pending_gesture == GESTURE_NONE
-            && g_touch_start_y >= 0) {
+        /* Lift — check for software swipe only when not a long-press */
+        if (g_was_touched && !g_in_long_press
+            && g_pending_gesture == GESTURE_NONE && g_touch_start_y >= 0) {
             int16_t dy = g_touch_last_y - g_touch_start_y;
             if      (dy < -SWIPE_MIN_DIST) g_pending_gesture = GESTURE_SWIPE_UP;
             else if (dy >  SWIPE_MIN_DIST) g_pending_gesture = GESTURE_SWIPE_DOWN;
         }
         g_was_touched   = false;
+        g_in_long_press = false;
+        g_hold_start_ms = 0;
         g_touch_start_y = -1;
+        g_touch_start_x = -1;
         data->state     = LV_INDEV_STATE_RELEASED;
         return;
     }
@@ -136,8 +152,21 @@ static void touch_read_cb(lv_indev_drv_t * /*drv*/, lv_indev_data_t *data) {
 
     if (!g_was_touched) {
         g_touch_start_y = y;
+        g_touch_start_x = x;
+        g_hold_start_ms = millis();
+        g_in_long_press = false;
         g_was_touched   = true;
+    } else if (!g_in_long_press) {
+        /* Invalidate long-press if finger drifted outside deadzone */
+        if (abs(x - g_touch_start_x) > HOLD_DEADZONE_PX ||
+            abs(y - g_touch_start_y) > HOLD_DEADZONE_PX) {
+            g_hold_start_ms = 0;
+        } else if (g_hold_start_ms &&
+                   (millis() - g_hold_start_ms) >= HOLD_THRESHOLD_MS) {
+            g_in_long_press = true;
+        }
     }
+
     g_touch_last_y  = y;
     data->point.x   = x;
     data->point.y   = y;
@@ -190,13 +219,29 @@ void display_init() {
     g_indev_drv.read_cb = touch_read_cb;
     lv_indev_drv_register(&g_indev_drv);
 
+    g_gfx->setBrightness(k_brightness[g_bright_idx]);
     Serial.printf("[display] %dx%d AMOLED ready, LVGL %d.%d.%d\n",
                   DISPLAY_WIDTH, DISPLAY_HEIGHT,
                   LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
 }
 
 TouchGesture display_pop_gesture() {
-    TouchGesture g   = g_pending_gesture;
+    TouchGesture g    = g_pending_gesture;
     g_pending_gesture = GESTURE_NONE;
     return g;
 }
+
+bool display_long_press_active() {
+    return g_in_long_press;
+}
+
+void display_step_brightness() {
+    g_bright_idx += g_bright_dir;
+    if (g_bright_idx >= k_num_levels - 1) { g_bright_idx = k_num_levels - 1; g_bright_dir = -1; }
+    else if (g_bright_idx <= 0)           { g_bright_idx = 0;                g_bright_dir = +1; }
+    uint8_t level = k_brightness[g_bright_idx];
+    g_gfx->setBrightness(level);
+    Serial.printf("[display] brightness → %u\n", level);
+}
+
+

@@ -2,10 +2,13 @@
 #include <Wire.h>
 #include <lvgl.h>
 #include <XPowersLib.h>
+#include <esp_log.h>
 
 #include "display.h"
 #include "ui.h"
 #include "counter.h"
+#include "audio.h"
+#include "alert.h"
 
 /* =========================================================================
    AXP2101 battery (PMIC on same I2C bus, address 0x34)
@@ -13,19 +16,26 @@
 static XPowersAXP2101 PMU;
 static bool g_pmu_ok = false;
 
+static int  g_bat_pct      = -1;    /* cached — refreshed every 30 s to avoid I2C contention */
+static bool g_bat_charging = false;
+
 static void battery_init() {
     /* Wire is already initialised by display_init(); pass -1 to skip re-init */
     g_pmu_ok = PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, -1, -1);
     Serial.printf("[battery] AXP2101: %s\n", g_pmu_ok ? "found" : "not found");
 }
 
-static int battery_percent() {
-    if (!g_pmu_ok) return -1;
-    return PMU.getBatteryPercent();
+static void battery_refresh() {
+    if (!g_pmu_ok) return;
+    g_bat_pct      = PMU.getBatteryPercent();
+    g_bat_charging = PMU.isCharging();
 }
 
+static int  battery_percent()  { return g_bat_pct; }
+static bool battery_charging() { return g_bat_charging; }
+
 /* =========================================================================
-   Boot button — GPIO0, active-low, toggles mode
+   Boot button — GPIO0, active-low, toggles counter mode
    ========================================================================= */
 #define PIN_BOOT_BTN 0
 
@@ -41,6 +51,23 @@ static void button_poll() {
         ui_set_footer(counter_mode_label());
     }
     g_btn_last = btn;
+}
+
+/* =========================================================================
+   PWR button — AXP2101 PKEY (not a GPIO; read via PMU IRQ registers)
+   Short press → cycle alert mode (OFF → VISUAL → SOUND LOW → SOUND HIGH → OFF)
+   ========================================================================= */
+static void pwr_button_poll() {
+    if (!g_pmu_ok) return;
+
+    PMU.getIrqStatus();
+    const bool short_irq = PMU.isPekeyShortPressIrq();
+    PMU.clearIrqStatus();
+
+    if (short_irq) {
+        alert_cycle_mode();
+        ui_show_alert_overlay(alert_mode_label());
+    }
 }
 
 /* =========================================================================
@@ -68,6 +95,11 @@ static void gesture_poll() {
 void setup() {
     Serial.begin(115200);
     delay(200);
+    /* FT3168 touch controller NACKs the first I2C read after its ~14s idle
+     * low-power timeout. The code handles this gracefully; suppress the log spam. */
+    esp_log_level_set("i2c.master",       ESP_LOG_NONE);
+    esp_log_level_set("esp32-hal-i2c-ng.c", ESP_LOG_NONE);
+    esp_log_level_set("Wire.cpp",         ESP_LOG_NONE);
     Serial.println("\n[HAXXcounter] booting");
 
     pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
@@ -76,28 +108,72 @@ void setup() {
     ui_init();
     counter_init();
 
+    audio_init();
+    alert_init();
+
+    /* Enable AXP2101 PKEY short-press IRQ for alert mode cycling.
+     * Push power-off threshold to 10 s so accidental holds don't shut down. */
+    if (g_pmu_ok) {
+        PMU.setPowerKeyPressOffTime(XPOWERS_POWEROFF_10S);
+        PMU.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);
+    }
+
+    battery_refresh();
     ui_set_footer(counter_mode_label());
     ui_update_rssi_indicator(counter_get_rssi());
-    ui_update_battery_indicator(battery_percent());
+    ui_update_battery_indicator(battery_percent(), battery_charging());
 
     Serial.printf("[HAXXcounter] ready  RSSI: %d dBm  battery: %d%%\n",
                   counter_get_rssi(), battery_percent());
 }
 
-static uint32_t g_last_battery_ms = 0;
+static uint32_t g_last_battery_ms  = 0;
+static uint32_t g_last_status_ms   = 0;
+static uint32_t g_brightness_ms    = 0;
+static bool     g_was_long_press   = false;
 
 void loop() {
     lv_timer_handler();
     counter_tick();
     button_poll();
+    pwr_button_poll();
     gesture_poll();
-    ui_set_count(counter_get());
+    const uint32_t cur_count = counter_get();
+    ui_set_count(cur_count);
+    alert_tick(cur_count);
+    ui_flash_tick();
 
-    /* Refresh battery indicator every 30 s */
     uint32_t now = millis();
+
+    /* Brightness — step every 400 ms while finger held stationary */
+    bool lp = display_long_press_active();
+    if (lp) {
+        if (!g_was_long_press || (now - g_brightness_ms) >= 300) {
+            g_brightness_ms = now;
+            display_step_brightness();
+        }
+    }
+    g_was_long_press = lp;
+
+    /* Serial status line every 5 s */
+    if (now - g_last_status_ms >= 5'000) {
+        g_last_status_ms = now;
+        CounterStats cs = counter_pop_stats();
+        Serial.printf(
+            "[status] t=%us  count=%u  +wifi=%u  +ble=%u  -evict=%u  skip=%u"
+            "  mode=%s  rssi=%d  ch=%u  bat=%d%%  alert=%s\n",
+            now / 1000, cs.table_size,
+            cs.new_wifi, cs.new_ble, cs.evicted,
+            cs.filtered_wifi + cs.filtered_ble,
+            counter_mode_label(), cs.rssi, cs.channel, battery_percent(),
+            alert_mode_label());
+    }
+
+    /* Refresh battery every 30 s — single I2C read, cached for status line */
     if (now - g_last_battery_ms >= 30'000) {
         g_last_battery_ms = now;
-        ui_update_battery_indicator(battery_percent());
+        battery_refresh();
+        ui_update_battery_indicator(battery_percent(), battery_charging());
     }
 
     delay(5);

@@ -1,5 +1,6 @@
 #include "counter.h"
 
+#include <atomic>
 #include <map>
 #include <string>
 
@@ -34,11 +35,22 @@ static inline bool mac_passes_filter(uint8_t first_byte) {
 static std::map<std::string, uint32_t> g_macs;
 static SemaphoreHandle_t g_mac_mutex = nullptr;
 
-static void mac_upsert(const std::string &key) {
+/* Per-interval counters — written from WiFi/BLE tasks, read+reset from main task. */
+static std::atomic<uint32_t> g_new_wifi      {0};
+static std::atomic<uint32_t> g_new_ble       {0};
+static std::atomic<uint32_t> g_evicted       {0};
+static std::atomic<uint32_t> g_filtered_wifi {0};
+static std::atomic<uint32_t> g_filtered_ble  {0};
+
+/* Returns true if the key was not already in the table (genuinely new MAC). */
+static bool mac_upsert(const std::string &key) {
+    bool is_new = false;
     if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE) {
+        is_new = (g_macs.count(key) == 0);
         g_macs[key] = millis();
         xSemaphoreGive(g_mac_mutex);
     }
+    return is_new;
 }
 
 static void mac_clear() {
@@ -50,15 +62,19 @@ static void mac_clear() {
 
 static void evict_stale() {
     uint32_t now = millis();
+    uint32_t n   = 0;
     if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE) {
         for (auto it = g_macs.begin(); it != g_macs.end(); ) {
-            if ((now - it->second) > DEDUP_WINDOW_MS)
+            if ((now - it->second) > DEDUP_WINDOW_MS) {
                 it = g_macs.erase(it);
-            else
+                n++;
+            } else {
                 ++it;
+            }
         }
         xSemaphoreGive(g_mac_mutex);
     }
+    g_evicted += n;
 }
 
 /* =========================================================================
@@ -85,13 +101,29 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf,
 
     /* In 802.11 frames the source MAC is in big-endian order;
      * frame[SRC_MAC_OFFSET] is the first byte (the OUI/flag byte). */
-    if (!mac_passes_filter(frame[SRC_MAC_OFFSET])) return;
+    const uint8_t first_byte = frame[SRC_MAC_OFFSET];
+    /* Bit 1 of first_byte is the IEEE "locally administered" flag.
+     * Set → device randomised its own MAC (phones/tablets).
+     * Clear → MAC was assigned by the manufacturer (hardware OUI). */
+    const bool is_random = (first_byte & 0x02) != 0;
+
+    if (!mac_passes_filter(first_byte)) {
+        g_filtered_wifi++;
+        return;
+    }
 
     char buf18[18];
     const uint8_t *m = frame + SRC_MAC_OFFSET;
     snprintf(buf18, sizeof(buf18), "%02x:%02x:%02x:%02x:%02x:%02x",
              m[0], m[1], m[2], m[3], m[4], m[5]);
-    mac_upsert(buf18);
+
+    if (mac_upsert(buf18)) {
+        g_new_wifi++;
+        Serial.printf("[wifi] NEW  %s  rssi=%4d  %s\n",
+                   buf18, pkt->rx_ctrl.rssi,
+                   is_random ? "random-MAC  -> phone/tablet"
+                             : "OUI-MAC     -> hardware/AP");
+    }
 }
 
 static void wifi_init() {
@@ -124,14 +156,25 @@ static void wifi_init() {
    ========================================================================= */
 class HAXXScanCallbacks : public NimBLEScanCallbacks {
     void onDiscovered(const NimBLEAdvertisedDevice *dev) override {
-        /* Drop devices below the RSSI threshold */
         if (dev->getRSSI() < g_rssi_threshold) return;
 
-        /* In phone-estimate mode ignore public (hardware) BLE addresses */
-        if (g_mode == MODE_PHONE_ESTIMATE &&
-            dev->getAddress().isPublic()) return;
+        /* BLE public address = hardware OUI (like a WiFi AP MAC).
+         * BLE random address = device-generated for privacy (like phones). */
+        const bool is_public = dev->getAddress().isPublic();
 
-        mac_upsert(dev->getAddress().toString());
+        if (g_mode == MODE_PHONE_ESTIMATE && is_public) {
+            g_filtered_ble++;
+            return;
+        }
+
+        if (mac_upsert(dev->getAddress().toString())) {
+            g_new_ble++;
+            Serial.printf("[ble]  NEW  %s  rssi=%4d  %s\n",
+                       dev->getAddress().toString().c_str(),
+                       dev->getRSSI(),
+                       is_public ? "public-addr -> hardware/IoT"
+                                 : "random-addr -> phone/tablet");
+        }
     }
 };
 
@@ -141,8 +184,8 @@ static void ble_start() {
     NimBLEScan *scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&g_ble_callbacks, false);
     scan->setActiveScan(false);
-    scan->setInterval(100);
-    scan->setWindow(99);
+    scan->setInterval(200);   /* 125 ms cycle */
+    scan->setWindow(100);     /* 62.5 ms on = 50% duty, leaves air time for advertising */
     scan->start(0, false);
 }
 
@@ -208,7 +251,7 @@ static void burst_scan_task(void *) {
         esp_wifi_set_channel(g_channel, WIFI_SECOND_CHAN_NONE);
 
         Serial.printf("[counter] burst done — mode=%s  MACs=%u\n",
-                      counter_mode_label(), counter_get());
+                   counter_mode_label(), counter_get());
     }
 }
 
@@ -227,15 +270,32 @@ static void hop_channel() {
 /* =========================================================================
    Public API
    ========================================================================= */
+CounterStats counter_pop_stats() {
+    CounterStats s = {};
+    if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE) {
+        s.table_size = (uint32_t)g_macs.size();
+        xSemaphoreGive(g_mac_mutex);
+    }
+    s.new_wifi      = g_new_wifi.exchange(0);
+    s.new_ble       = g_new_ble.exchange(0);
+    s.evicted       = g_evicted.exchange(0);
+    s.filtered_wifi = g_filtered_wifi.exchange(0);
+    s.filtered_ble  = g_filtered_ble.exchange(0);
+    s.channel       = g_channel;
+    s.rssi          = g_rssi_threshold;
+    s.mode          = g_mode;
+    return s;
+}
+
 void counter_init() {
     g_mac_mutex = xSemaphoreCreateMutex();
     configASSERT(g_mac_mutex);
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     wifi_init();
     ble_init();
-    xTaskCreate(burst_scan_task, "burst_scan", 4096,
+    xTaskCreate(burst_scan_task, "burst_scan", 6144,
                 nullptr, 1, &g_burst_task);
-    Serial.println("[counter] burst scan task created");
+    Serial.println("[counter] ready");
 }
 
 uint32_t counter_get() {

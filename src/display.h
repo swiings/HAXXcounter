@@ -19,8 +19,12 @@ enum TouchGesture {
  */
 void display_init();
 
-/**
- * Returns and clears the most recent swipe gesture detected by the touch
- * driver. Call once per loop after lv_timer_handler().
- */
+/** Returns and clears the most recent swipe gesture. */
 TouchGesture display_pop_gesture();
+
+/** True while a finger has been held stationary for > 500 ms.
+ *  Clears automatically on lift. */
+bool display_long_press_active();
+
+/** Advance to the next preset brightness level (cycles dim → bright → dim). */
+void display_step_brightness();

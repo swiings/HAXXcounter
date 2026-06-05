@@ -26,8 +26,12 @@ static lv_obj_t *g_rssi_fill = nullptr;
 static lv_obj_t *g_bat_fill  = nullptr;
 
 /* ---- cached values so tap callbacks can show current readings ---- */
-static int g_last_rssi_dbm = -80;
-static int g_last_bat_pct  = -1;
+static int  g_last_rssi_dbm    = -80;
+static int  g_last_bat_pct     = -1;
+static bool g_last_bat_charging = false;
+
+/* ---- charging bolt label (shown on the battery strip when charging) ---- */
+static lv_obj_t *g_charge_label = nullptr;
 
 /* ---- RSSI overlay ---- */
 static lv_obj_t   *g_rssi_box   = nullptr;
@@ -40,6 +44,17 @@ static lv_obj_t   *g_bat_box    = nullptr;
 static lv_obj_t   *g_bat_label  = nullptr;
 static lv_obj_t   *g_bat_bar    = nullptr;
 static lv_timer_t *g_bat_timer  = nullptr;
+
+/* ---- alert-mode overlay (brief text pop-up on PWR button press) ---- */
+static lv_obj_t   *g_alert_box   = nullptr;
+static lv_obj_t   *g_alert_label = nullptr;
+static lv_timer_t *g_alert_timer = nullptr;
+
+/* ---- screen flash (full-screen orange overlay, toggled by ui_flash_tick) ---- */
+static lv_obj_t  *g_flash_overlay = nullptr;
+static uint32_t   g_flash_end_ms  = 0;
+static uint32_t   g_flash_next_ms = 0;
+static bool       g_flash_on      = false;
 
 /* =========================================================================
    Helpers
@@ -193,6 +208,24 @@ static void on_bat_strip_tap(lv_event_t * /*e*/) {
 }
 
 /* =========================================================================
+   Alert-mode overlay (text pop-up, same pattern as RSSI/battery overlays)
+   ========================================================================= */
+static void alert_hide_cb(lv_timer_t * /*t*/) {
+    if (g_alert_box) lv_obj_add_flag(g_alert_box, LV_OBJ_FLAG_HIDDEN);
+    g_alert_timer = nullptr;
+}
+
+static void alert_overlay_create(lv_obj_t *scr) {
+    g_alert_box = make_overlay_box(scr);
+
+    g_alert_label = lv_label_create(g_alert_box);
+    lv_obj_set_style_text_font(g_alert_label, &lv_font_montserrat_22, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_alert_label, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_width(g_alert_label, LV_SIZE_CONTENT);
+    lv_obj_center(g_alert_label);
+}
+
+/* =========================================================================
    Public API
    ========================================================================= */
 void ui_init() {
@@ -243,6 +276,28 @@ void ui_init() {
     lv_obj_set_style_text_font(g_footer_label, &lv_font_montserrat_22, LV_PART_MAIN);
     lv_obj_set_style_text_color(g_footer_label, lv_color_hex(0x80C0FF), LV_PART_MAIN);
     lv_obj_center(g_footer_label);
+
+    /* Charging bolt — floats above the battery strip, hidden until charging */
+    g_charge_label = lv_label_create(scr);
+    lv_label_set_text(g_charge_label, LV_SYMBOL_CHARGE);
+    lv_obj_set_style_text_font(g_charge_label, &lv_font_montserrat_22, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_charge_label, lv_color_hex(0x00DFDF), LV_PART_MAIN);
+    lv_obj_align(g_charge_label, LV_ALIGN_TOP_RIGHT, -5, 10);
+    lv_obj_add_flag(g_charge_label, LV_OBJ_FLAG_HIDDEN);
+
+    /* Screen-flash overlay — full-screen orange rect, hidden until alert fires.
+     * Created last so it is above all other UI elements. */
+    g_flash_overlay = lv_obj_create(scr);
+    lv_obj_set_size(g_flash_overlay, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_pos(g_flash_overlay, 0, 0);
+    lv_obj_set_style_bg_color(g_flash_overlay, lv_color_hex(0xFF6600), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_flash_overlay, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_flash_overlay, 0, LV_PART_MAIN);
+    lv_obj_add_flag(g_flash_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g_flash_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Alert-mode text overlay — created last for correct z-order */
+    alert_overlay_create(scr);
 }
 
 void ui_set_count(uint32_t count) {
@@ -275,9 +330,13 @@ void ui_show_rssi_overlay(int dbm) {
 
 void ui_show_battery_overlay(int pct) {
     if (!g_bat_box) bat_overlay_create();
-    char buf[20];
-    if (pct < 0) snprintf(buf, sizeof(buf), "battery: --");
-    else         snprintf(buf, sizeof(buf), "battery: %d%%", pct);
+    char buf[40];
+    if (pct < 0)
+        snprintf(buf, sizeof(buf), "battery: --");
+    else if (g_last_bat_charging)
+        snprintf(buf, sizeof(buf), "battery: %d%% " LV_SYMBOL_CHARGE, pct);
+    else
+        snprintf(buf, sizeof(buf), "battery: %d%%", pct);
     lv_label_set_text(g_bat_label, buf);
     if (pct >= 0) {
         lv_bar_set_value(g_bat_bar, pct, LV_ANIM_ON);
@@ -304,14 +363,65 @@ void ui_update_rssi_indicator(int dbm) {
     lv_obj_set_height(g_rssi_fill, h);
 }
 
-void ui_update_battery_indicator(int pct) {
-    g_last_bat_pct = pct;    /* cache for tap callback */
+void ui_update_battery_indicator(int pct, bool charging) {
+    g_last_bat_pct      = pct;
+    g_last_bat_charging = charging;
     if (!g_bat_fill || pct < 0) return;
+
     int h = (pct * DISPLAY_HEIGHT) / 100;
     lv_obj_set_pos(g_bat_fill, 0, DISPLAY_HEIGHT - h);
     lv_obj_set_height(g_bat_fill, h);
-    lv_color_t col = (pct > 50) ? lv_color_hex(0x206020)
-                   : (pct > 20) ? lv_color_hex(0x705020)
-                                : lv_color_hex(0x702020);
+
+    lv_color_t col;
+    if (charging)
+        col = lv_color_hex(0x008080);           /* teal — unmistakably "charging" */
+    else
+        col = (pct > 50) ? lv_color_hex(0x206020)
+            : (pct > 20) ? lv_color_hex(0x705020)
+                         : lv_color_hex(0x702020);
     lv_obj_set_style_bg_color(g_bat_fill, col, LV_PART_MAIN);
+
+    if (g_charge_label) {
+        if (charging) lv_obj_clear_flag(g_charge_label, LV_OBJ_FLAG_HIDDEN);
+        else          lv_obj_add_flag  (g_charge_label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ui_trigger_flash() {
+    if (!g_flash_overlay) return;
+    lv_obj_move_foreground(g_flash_overlay);   /* ensure it's above all overlays */
+    g_flash_end_ms  = millis() + 1500u;
+    g_flash_next_ms = millis();
+    g_flash_on      = true;
+    lv_obj_clear_flag(g_flash_overlay, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_flash_tick() {
+    if (!g_flash_overlay || g_flash_end_ms == 0) return;
+
+    const uint32_t now = millis();
+    if (now >= g_flash_end_ms) {
+        g_flash_end_ms = 0;
+        g_flash_on     = false;
+        lv_obj_add_flag(g_flash_overlay, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (now >= g_flash_next_ms) {
+        g_flash_next_ms = now + 200u;
+        g_flash_on      = !g_flash_on;
+        if (g_flash_on) lv_obj_clear_flag(g_flash_overlay, LV_OBJ_FLAG_HIDDEN);
+        else            lv_obj_add_flag  (g_flash_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ui_show_alert_overlay(const char *text) {
+    if (!g_alert_box) return;
+    lv_obj_move_foreground(g_alert_box);
+    lv_label_set_text(g_alert_label, text);
+    lv_obj_clear_flag(g_alert_box, LV_OBJ_FLAG_HIDDEN);
+    if (g_alert_timer) lv_timer_reset(g_alert_timer);
+    else {
+        g_alert_timer = lv_timer_create(alert_hide_cb, 2000, nullptr);
+        lv_timer_set_repeat_count(g_alert_timer, 1);
+    }
 }
