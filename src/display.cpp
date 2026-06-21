@@ -31,7 +31,8 @@
  *   0x05 : P1_YH      (id[7:4],   y_hi[3:0])
  *   0x06 : P1_YL      (y_lo[7:0])
  */
-#define FT3168_ADDR       0x38
+#define FT3168_ADDR       0x38   /* V1 touch controller */
+#define CST816_ADDR       0x15   /* V2 touch controller (FT-compatible data regs) */
 #define FT_REG_GESTURE    0x01
 #define FT_SWIPE_UP       0x10
 #define FT_SWIPE_DOWN     0x14
@@ -41,7 +42,10 @@
    Statics
    ------------------------------------------------------------------------- */
 static Arduino_ESP32QSPI *g_bus = nullptr;
-static Arduino_SH8601    *g_gfx = nullptr;
+static Arduino_OLED      *g_gfx = nullptr;   /* SH8601 (V1) or CO5300 (V2) */
+
+/* Board revision, detected at boot by probing the touch controller. */
+static uint8_t g_touch_addr      = FT3168_ADDR;
 
 static lv_color_t        *g_buf0 = nullptr;
 static lv_color_t        *g_buf1 = nullptr;
@@ -89,6 +93,17 @@ static void lcd_reset_sequence() {
 /* -------------------------------------------------------------------------
    LVGL display flush
    ------------------------------------------------------------------------- */
+/* The CO5300 (and SH8601) require flush windows to start on an even pixel and
+ * span an even width/height.  LVGL may hand us odd-aligned partial areas, which
+ * the controller mis-tracks — producing the diagonal shearing seen on V2.
+ * Snap x1/y1 down to even and x2/y2 up to odd (matches Waveshare's BSP). */
+static void disp_rounder_cb(lv_disp_drv_t * /*drv*/, lv_area_t *area) {
+    area->x1 &= ~1;
+    area->y1 &= ~1;
+    area->x2 |=  1;
+    area->y2 |=  1;
+}
+
 static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                           lv_color_t *color_p) {
     g_gfx->draw16bitBeRGBBitmap(area->x1, area->y1,
@@ -102,14 +117,15 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
    FT3168 touch read callback (called by LVGL every LV_INDEV_DEF_READ_PERIOD)
    ------------------------------------------------------------------------- */
 static void touch_read_cb(lv_indev_drv_t * /*drv*/, lv_indev_data_t *data) {
-    /* Read 6 registers starting at 0x01 */
-    Wire.beginTransmission(FT3168_ADDR);
+    /* Read 6 registers starting at 0x01.  FT3168 (V1) and CST816S (V2) share
+     * the same touch-data register layout; only the I2C address differs. */
+    Wire.beginTransmission(g_touch_addr);
     Wire.write(FT_REG_GESTURE);
     if (Wire.endTransmission(false) != 0) {
         data->state = LV_INDEV_STATE_RELEASED;
         return;
     }
-    Wire.requestFrom((uint8_t)FT3168_ADDR, (uint8_t)6);
+    Wire.requestFrom(g_touch_addr, (uint8_t)6);
     if (Wire.available() < 6) {
         data->state = LV_INDEV_STATE_RELEASED;
         return;
@@ -182,36 +198,60 @@ void display_init() {
 
     lcd_reset_sequence();
 
-    /* Probe for FT3168 and log result */
-    Wire.beginTransmission(FT3168_ADDR);
-    bool touch_ok = (Wire.endTransmission() == 0);
-    Serial.printf("[display] FT3168 @ 0x%02X: %s\n",
-                  FT3168_ADDR, touch_ok ? "found" : "NOT FOUND");
+    /* Detect board revision by probing the touch controller:
+     *   V2 → CST816S @ 0x15 paired with CO5300 AMOLED
+     *   V1 → FT3168  @ 0x38 paired with SH8601 AMOLED
+     * The two panels share the same QSPI pinout, so only the driver differs. */
+    Wire.beginTransmission(CST816_ADDR);
+    bool is_v2   = (Wire.endTransmission() == 0);
+    g_touch_addr = is_v2 ? CST816_ADDR : FT3168_ADDR;
+    Serial.printf("[display] board %s — touch @ 0x%02X\n",
+                  is_v2 ? "V2 (CO5300/CST816S)" : "V1 (SH8601/FT3168)",
+                  g_touch_addr);
 
-    /* QSPI bus → SH8601 AMOLED */
+    /* QSPI bus → AMOLED panel (identical pins on both revisions) */
     g_bus = new Arduino_ESP32QSPI(
         PIN_LCD_CS, PIN_LCD_SCLK,
         PIN_LCD_SDIO0, PIN_LCD_SDIO1, PIN_LCD_SDIO2, PIN_LCD_SDIO3);
-    g_gfx = new Arduino_SH8601(g_bus, GFX_NOT_DEFINED,
-                                0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    if (is_v2) {
+        /* CO5300: the 368×448 active area sits at column offset 16 (X_GAP). */
+        g_gfx = new Arduino_CO5300(g_bus, GFX_NOT_DEFINED, 0,
+                                   DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                   16, 0, 0, 0);
+    } else {
+        g_gfx = new Arduino_SH8601(g_bus, GFX_NOT_DEFINED, 0,
+                                   DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    }
     if (!g_gfx->begin())
-        Serial.println("[display] Arduino_SH8601::begin() failed");
+        Serial.println("[display] panel begin() failed");
     g_gfx->fillScreen(0x0000);
 
     /* LVGL */
     lv_init();
-    const size_t buf_px = (size_t)DISPLAY_WIDTH * (DISPLAY_HEIGHT / 4);
-    g_buf0 = (lv_color_t *)heap_caps_malloc(
-        buf_px * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    g_buf1 = (lv_color_t *)heap_caps_malloc(
-        buf_px * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* Draw buffers MUST live in internal DMA-capable RAM: the CO5300 at 40 MHz
+     * QSPI underruns if pixel data is DMA'd from slower PSRAM, which shows up as
+     * intermittent horizontal shearing/banding.  Use a smaller partial buffer
+     * (48 rows) so two of them fit in internal RAM; fall back to PSRAM only if
+     * the internal allocation fails. */
+    const size_t buf_px    = (size_t)DISPLAY_WIDTH * 48;
+    const size_t buf_bytes = buf_px * sizeof(lv_color_t);
+    g_buf0 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    g_buf1 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!g_buf0 || !g_buf1) {
+        Serial.println("[display] internal DMA buffer alloc failed — using PSRAM");
+        if (g_buf0) heap_caps_free(g_buf0);
+        if (g_buf1) heap_caps_free(g_buf1);
+        g_buf0 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        g_buf1 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
     lv_disp_draw_buf_init(&g_draw_buf, g_buf0, g_buf1, buf_px);
 
     lv_disp_drv_init(&g_disp_drv);
     g_disp_drv.hor_res  = DISPLAY_WIDTH;
     g_disp_drv.ver_res  = DISPLAY_HEIGHT;
-    g_disp_drv.flush_cb = disp_flush_cb;
-    g_disp_drv.draw_buf = &g_draw_buf;
+    g_disp_drv.flush_cb   = disp_flush_cb;
+    g_disp_drv.rounder_cb = disp_rounder_cb;
+    g_disp_drv.draw_buf   = &g_draw_buf;
     lv_disp_drv_register(&g_disp_drv);
 
     lv_indev_drv_init(&g_indev_drv);
