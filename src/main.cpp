@@ -56,6 +56,7 @@ static void button_poll() {
 /* =========================================================================
    PWR button — AXP2101 PKEY (not a GPIO; read via PMU IRQ registers)
    Short press → cycle alert mode (OFF → VISUAL → SOUND LOW → SOUND HIGH → OFF)
+   Really long press → native power off
    ========================================================================= */
 static void pwr_button_poll() {
     if (!g_pmu_ok) return;

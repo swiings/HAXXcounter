@@ -30,7 +30,7 @@ void alert_tick(uint32_t count) {
         ui_trigger_flash();
         if ((g_mode == ALERT_SOUND_LOW || g_mode == ALERT_SOUND_HIGH)
             && !audio_is_playing()) {
-            audio_set_volume(g_mode == ALERT_SOUND_LOW ? 65u : 85u);
+            audio_set_volume(g_mode == ALERT_SOUND_LOW ? 45u : 85u);
             audio_play_alert();
         }
     }

@@ -184,7 +184,7 @@ static void ble_start() {
     NimBLEScan *scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&g_ble_callbacks, false);
     scan->setActiveScan(false);
-    scan->setInterval(200);   /* 125 ms cycle */
+    scan->setInterval(100);   /* 125 ms cycle */
     scan->setWindow(100);     /* 62.5 ms on = 50% duty, leaves air time for advertising */
     scan->start(0, false);
 }
@@ -290,7 +290,7 @@ CounterStats counter_pop_stats() {
 void counter_init() {
     g_mac_mutex = xSemaphoreCreateMutex();
     configASSERT(g_mac_mutex);
-    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    esp_coex_preference_set(ESP_COEX_PREFER_BT);
     wifi_init();
     ble_init();
     xTaskCreate(burst_scan_task, "burst_scan", 6144,
