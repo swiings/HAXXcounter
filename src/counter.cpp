@@ -296,8 +296,8 @@ void counter_init() {
     xTaskCreatePinnedToCore(burst_scan_task, "burst_scan", 6144,
                 nullptr, 1, &g_burst_task, 
                 0);      /* Pin explicitly to Core 0 */
-    Serial.printf("[counter] ready, pinned to Core: %d\n", xTaskGetCoreID(g_burst_task));   
-
+    Serial.printf("[counter] burst scanner ready, pinned to Core: %d\n", xTaskGetCoreID(g_burst_task));   
+    Serial.printf("[counter] init complete \n");   
 }
 
 uint32_t counter_get() {
