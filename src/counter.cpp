@@ -293,9 +293,11 @@ void counter_init() {
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
     wifi_init();
     ble_init();
-    xTaskCreate(burst_scan_task, "burst_scan", 6144,
-                nullptr, 1, &g_burst_task);
-    Serial.println("[counter] ready");
+    xTaskCreatePinnedToCore(burst_scan_task, "burst_scan", 6144,
+                nullptr, 1, &g_burst_task, 
+                0);      /* Pin explicitly to Core 0 */
+    Serial.printf("[counter] ready, pinned to Core: %d\n", xTaskGetCoreID(g_burst_task));   
+
 }
 
 uint32_t counter_get() {

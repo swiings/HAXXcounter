@@ -156,8 +156,8 @@ void loop() {
     }
     g_was_long_press = lp;
 
-    /* Serial status line every 5 s */
-    if (now - g_last_status_ms >= 5'000) {
+    /* Serial status line every 10 s */
+    if (now - g_last_status_ms >= 10'000) {
         g_last_status_ms = now;
         CounterStats cs = counter_pop_stats();
         Serial.printf(
