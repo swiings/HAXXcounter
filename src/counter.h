@@ -15,7 +15,7 @@ enum CounterMode {
 
 /** RSSI threshold — frames weaker than this value are ignored.
  *  -60 = same room only  |  -80 = medium (default)  |  -95 = through walls */
-constexpr int RSSI_DEFAULT =  -80;
+constexpr int RSSI_DEFAULT =  -65;
 constexpr int RSSI_MIN     =  -95;
 constexpr int RSSI_MAX     =  -45;   /* raised from -60; leaves room for same-room-only tuning */
 constexpr int RSSI_STEP    =    5;

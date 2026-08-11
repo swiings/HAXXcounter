@@ -69,7 +69,7 @@ static bool     g_in_long_press = false;
 /* Brightness levels — cycles dim→bright, wraps */
 static const uint8_t k_brightness[]  = {10, 30, 55, 80, 105, 130, 160, 190, 220, 255};
 static const int     k_num_levels    = 10;
-static int           g_bright_idx    = 4;    /* start at 105 */
+static int           g_bright_idx    = 5;    /* start at 130 */
 static int           g_bright_dir    = -1;   /* -1 = dimming, +1 = brightening */
 
 /* -------------------------------------------------------------------------
@@ -205,7 +205,8 @@ void display_init() {
     Wire.beginTransmission(CST816_ADDR);
     bool is_v2   = (Wire.endTransmission() == 0);
     g_touch_addr = is_v2 ? CST816_ADDR : FT3168_ADDR;
-    Serial.printf("[display] board %s — touch @ 0x%02X\n",
+    Serial.printf("%06lu %-9s pcb board %s — touch @ 0x%02X\n",
+                  millis() / 1000, "[display]  ",
                   is_v2 ? "V2 (CO5300/CST816S)" : "V1 (SH8601/FT3168)",
                   g_touch_addr);
 
@@ -223,7 +224,7 @@ void display_init() {
                                    DISPLAY_WIDTH, DISPLAY_HEIGHT);
     }
     if (!g_gfx->begin())
-        Serial.println("[display] panel begin() failed");
+        Serial.printf("%06lu %-9s panel begin() failed\n", millis() / 1000, "[display]");
     g_gfx->fillScreen(0x0000);
 
     /* LVGL */
@@ -238,7 +239,7 @@ void display_init() {
     g_buf0 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     g_buf1 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!g_buf0 || !g_buf1) {
-        Serial.println("[display] internal DMA buffer alloc failed — using PSRAM");
+        Serial.printf("%06lu %-9s internal DMA buffer alloc failed — using PSRAM\n", millis() / 1000, "[display]");
         if (g_buf0) heap_caps_free(g_buf0);
         if (g_buf1) heap_caps_free(g_buf1);
         g_buf0 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -260,7 +261,8 @@ void display_init() {
     lv_indev_drv_register(&g_indev_drv);
 
     g_gfx->setBrightness(k_brightness[g_bright_idx]);
-    Serial.printf("[display] %dx%d AMOLED ready, LVGL %d.%d.%d\n",
+    Serial.printf("%06lu %-9s %dx%d AMOLED ready, LVGL %d.%d.%d\n",
+                millis() / 1000, "[display]",
                   DISPLAY_WIDTH, DISPLAY_HEIGHT,
                   LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
 }
@@ -281,7 +283,7 @@ void display_step_brightness() {
     else if (g_bright_idx <= 0)           { g_bright_idx = 0;                g_bright_dir = +1; }
     uint8_t level = k_brightness[g_bright_idx];
     g_gfx->setBrightness(level);
-    Serial.printf("[display] brightness → %u\n", level);
+    Serial.printf("%06lu %-9s brightness → %u\n", millis() / 1000, "[display]",level);
 }
 
 

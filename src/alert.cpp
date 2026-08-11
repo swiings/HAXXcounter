@@ -5,6 +5,9 @@
 static AlertMode g_mode      = ALERT_OFF;
 static uint32_t  g_threshold = 0;
 
+#define CLR_RED     "\033[31m"
+#define CLR_RESET   "\033[0m"
+
 void alert_init() {
     g_mode      = ALERT_OFF;
     g_threshold = 0;
@@ -30,7 +33,7 @@ void alert_tick(uint32_t count) {
         ui_trigger_flash();
         if ((g_mode == ALERT_SOUND_LOW || g_mode == ALERT_SOUND_HIGH)
             && !audio_is_playing()) {
-            audio_set_volume(g_mode == ALERT_SOUND_LOW ? 45u : 85u);
+            audio_set_volume(g_mode == ALERT_SOUND_LOW ? 50u : 80u);
             audio_play_alert();
         }
     }
@@ -40,7 +43,7 @@ AlertMode alert_get_mode() { return g_mode; }
 
 void alert_cycle_mode() {
     g_mode = (AlertMode)(((int)g_mode + 1) % 4);
-    Serial.printf("[alert] mode → %s\n", alert_mode_label());
+    Serial.printf(CLR_RED "%06lu %-9s mode change → %s\n" CLR_RESET, millis() / 1000, "[alert]", alert_mode_label());
 }
 
 const char *alert_mode_label() {
