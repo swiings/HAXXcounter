@@ -43,7 +43,7 @@ AlertMode alert_get_mode() { return g_mode; }
 
 void alert_cycle_mode() {
     g_mode = (AlertMode)(((int)g_mode + 1) % 4);
-    Serial.printf(CLR_RED "%06lu %-9s mode change → %s\n" CLR_RESET, millis() / 1000, "[alert]", alert_mode_label());
+    Serial.printf(CLR_RED "%06lu %-11s A1 mode change → %s\n" CLR_RESET, millis() / 1000, "[alert]", alert_mode_label());
 }
 
 const char *alert_mode_label() {

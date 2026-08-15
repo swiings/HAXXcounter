@@ -38,13 +38,13 @@ static bool es_probe() {
     Wire.requestFrom((uint8_t)ES8311_ADDR, (uint8_t)1);
     if (!Wire.available()) return false;
     id = Wire.read();
-    Serial.printf("%06lu %-9s ES8311 ID = 0x%02X\n", millis() / 1000, "[audio]", id);
+    Serial.printf("%06lu %-11s A2 ES8311 ID = 0x%02X\n", millis() / 1000, "[audio]", id);
     return true;
 }
 
 static bool es_init_dac() {
     if (!es_probe()) {
-        Serial.printf("%06lu %-9s ES8311 not found on I2C bus\n", millis() / 1000, "[audio]");
+        Serial.printf("%06lu %-11s A3 ES8311 not found on I2C bus\n", millis() / 1000, "[audio]");
         return false;
     }
 
@@ -131,7 +131,7 @@ static void build_alert_pcm() {
     g_alert_bytes = bytes;
 
     if (!g_alert_buf) {
-        Serial.printf("%06lu %-9s PSRAM alloc failed for alert PCM\n", millis() / 1000, "[audio]");
+        Serial.printf("%06lu %-11s A4 PSRAM alloc failed for alert PCM\n", millis() / 1000, "[audio]");
         return;
     }
 
@@ -142,7 +142,7 @@ static void build_alert_pcm() {
     gen_silence(p, S2);          p += S2 * 2;
     gen_tone   (p, T3, 1320.0f);
 
-    Serial.printf("%06lu %-9s alert PCM ready — %u bytes in PSRAM\n",
+    Serial.printf("%06lu %-11s A5 alert PCM ready — %u bytes in PSRAM\n",
                   millis() / 1000, "[audio]", (unsigned)g_alert_bytes);
 }
 
@@ -184,7 +184,7 @@ void audio_init() {
     if (!g_i2s.begin(I2S_MODE_STD, SAMPLE_RATE,
                      I2S_DATA_BIT_WIDTH_16BIT,
                      I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
-        Serial.printf("%06lu %-9s I2S begin() failed\n", millis() / 1000, "[audio]");
+        Serial.printf("%06lu %-11s A6 I2S begin() failed\n", millis() / 1000, "[audio]");
         return;
     }
 
@@ -198,7 +198,7 @@ void audio_init() {
     g_queue = xQueueCreate(4, sizeof(AudioCmd));
     xTaskCreate(audio_task, "audio", 4096, nullptr, 3, &g_task_handle);
 
-    Serial.printf("%06lu %-9s ready\n", millis() / 1000, "[audio]");
+    Serial.printf("%06lu %-11s A7 ready\n", millis() / 1000, "[audio]");
 }
 
 void audio_play_alert() {

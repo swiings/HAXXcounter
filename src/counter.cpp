@@ -70,7 +70,7 @@ static void mac_clear()
     {
         g_macs.clear();
         xSemaphoreGive(g_mac_mutex);
-        Serial.printf(CLR_GREEN "%06lu %-9s cleared MAC table\n" CLR_RESET, millis() / 1000, "[counter]");
+        Serial.printf(CLR_GREEN "%06lu %-11s C1 cleared MAC table\n" CLR_RESET, millis() / 1000, "[counter]");
     }
 }
 
@@ -82,9 +82,12 @@ static void evict_stale()
     {
         for (auto it = g_macs.begin(); it != g_macs.end();)
         {
-            if ((now - it->second) > DEDUP_WINDOW_MS)
+            // if people only, evict in half the time
+            uint32_t dedupTimer = g_mode == MODE_PHONE_ESTIMATE ? DEDUP_WINDOW_MS / 2 : DEDUP_WINDOW_MS;
+
+            if ((now - it->second) > dedupTimer)
             {
-                Serial.printf(CLR_GREEN "%06lu %-9s evicted stale MAC: %s\n" CLR_RESET, millis() / 1000, "[counter]", it->first.c_str());
+                Serial.printf(CLR_GREEN "%06lu %-11s C2 evicted stale MAC: %s\n" CLR_RESET, millis() / 1000, "[counter]", it->first.c_str());
                 it = g_macs.erase(it);
                 n++;
             }
@@ -98,7 +101,7 @@ static void evict_stale()
     g_evicted += n;
     if (g_evicted > 0)
     {
-        Serial.printf(CLR_GREEN "%06lu %-9s evicted %u stale MAC(s)\n" CLR_RESET, millis() / 1000, "[counter]", g_evicted.load());
+        Serial.printf(CLR_GREEN "%06lu %-11s C3 evicted %u stale MAC(s)\n" CLR_RESET, millis() / 1000, "[counter]", g_evicted.load());
     }
 }
 
@@ -111,13 +114,11 @@ static void evict_stale()
 #define PROBE_REQ_SUB 4
 #define SRC_MAC_OFFSET 10
 
-static void IRAM_ATTR wifi_sniffer_cb(void *buf,
-                                      wifi_promiscuous_pkt_type_t type)
+static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
     if (type != WIFI_PKT_MGMT)
         return;
-    const wifi_promiscuous_pkt_t *pkt =
-        reinterpret_cast<const wifi_promiscuous_pkt_t *>(buf);
+    const wifi_promiscuous_pkt_t *pkt = reinterpret_cast<const wifi_promiscuous_pkt_t *>(buf);
     const uint8_t *frame = pkt->payload;
     if (pkt->rx_ctrl.sig_len < 24)
         return;
@@ -138,7 +139,7 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf,
      * Clear → MAC was assigned by the manufacturer (hardware OUI). */
     const bool is_random = (first_byte & 0x02) != 0;
 
-    if (!mac_passes_filter(first_byte))
+    if (g_mode == MODE_PHONE_ESTIMATE && !mac_passes_filter(first_byte))
     {
         g_filtered_wifi++;
         return;
@@ -152,7 +153,7 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf,
     if (mac_upsert(buf18))
     {
         g_new_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-9s " CLR_RED "NEW " CLR_YELLOW "%s rssi=%4d %s\n" CLR_RESET,
+        Serial.printf(CLR_YELLOW "%06lu %-11s W1" CLR_RED " NEW " CLR_YELLOW "%s rssi=%4d %s\n" CLR_RESET,
                       millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi,
                       is_random ? "random-MAC  -> phone/tablet"
                                 : "OUI-MAC     -> hardware/AP");
@@ -182,7 +183,7 @@ static void wifi_init()
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filt));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
-    Serial.printf(CLR_YELLOW "%06lu %-9s WiFi promiscuous sniffer running\n" CLR_RESET, millis() / 1000, "[wifi]", millis() / 1000);
+    Serial.printf(CLR_YELLOW "%06lu %-11s W2 WiFi promiscuous sniffer running\n" CLR_RESET, millis() / 1000, "[wifi]", millis() / 1000);
 }
 
 /* =========================================================================
@@ -209,7 +210,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
     //     {
     //         g_new_ble++;
     //         const uint32_t now = millis();
-    //         Serial.printf(CLR_BLUE "%06lu %-9s" CLR_RED " NEW " CLR_BLUE "%s rssi=%4d %s" CLR_RESET "\n",
+    //         Serial.printf(CLR_BLUE "%06lu %-11s" CLR_RED " NEW " CLR_BLUE "%s rssi=%4d %s" CLR_RESET "\n",
     //                       now / 1000,
     //                       "[ble]",
     //                       dev->getAddress().toString().c_str(),
@@ -221,7 +222,6 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
 
     void onResult(const NimBLEAdvertisedDevice *advertisedDevice)
     {
-        // printf("made it to NimBLE callback\n");
         if (advertisedDevice->getRSSI() < g_rssi_threshold)
         {
             g_filtered_ble++;
@@ -231,7 +231,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         NimBLEAddress address = advertisedDevice->getAddress();
 
         // if (address.isRpa() && g_mode == MODE_PHONE_ESTIMATE)
-        if (address.isRpa())
+        if (address.isRpa()) //  RPA devices are the newer phones and other devices that change MACs randomly.
         {
             // 📱 CLASSIFIED AS PRIVACY-ENABLED DEVICE (Phones, Tablets, Wearables)
             bool isActualPhone = false;
@@ -277,22 +277,95 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                 }
             }
 
+            std::string devType = "";
+
             // if (g_mode == MODE_PHONE_ESTIMATE && isActualPhone)
             if (isActualPhone)
             {
+                if (isApple)
+                {
+                    std::string data = advertisedDevice->getManufacturerData();
+
+                    uint8_t appleType = (uint8_t)data[2];
+                    uint8_t appleLength = (uint8_t)data[3];
+
+                    // Check if the packet is actually as long as Apple claims it is
+                    if ((size_t)data.length() >= (size_t)(4 + appleLength))
+                    {
+                        switch (appleType)
+                        {
+                        case 0x02:
+                            devType = "0x02iBeacon";
+                            break;
+                        case 0x07:
+                            devType = "0x07 AirPods";
+                            break;
+                        case 0x0C:
+                            devType = "0x0C Continuity / Handoff data (often a Mac or iPhone)";
+                            break;
+                        case 0x10:
+                            devType = "0x10 Nearby Info / Action with subtype ";
+                            // Ensure we have at least one byte of data in the payload to check
+                            if (appleLength > 0 && data.length() >= 5)
+                            {
+                                uint8_t deviceClassByte = (uint8_t)data[4];
+
+                                // Filter based on known device flags / classes inside 0x10
+                                if (deviceClassByte == 0x2C || deviceClassByte == 0x02 || deviceClassByte == 0x0C)
+                                {
+                                    devType += "0x2C, 0x02, or 0x0C (iPhone)";
+                                }
+                                else if (deviceClassByte == 0x0E)
+                                {
+                                    devType += "0x0E (Apple Watch)";
+                                }
+                                else if (deviceClassByte == 0x20 || deviceClassByte == 0x4C)
+                                {
+                                    devType += "0x20 or 0x4C (Mac / MacBook)";
+                                }
+                                else if (deviceClassByte == 0x39 || deviceClassByte == 0x30)
+                                {
+                                    devType += "0x39 (iOS Device - likely iPad or iPhone)";
+                                }
+                                else if (deviceClassByte == 0x3C)
+                                {
+                                    devType += "0x3C (iPad)";
+                                }
+                                else if (deviceClassByte == 0x4C)
+                                {
+                                    devType += "0x4C (Macbook / Mac)";
+                                }
+                                else
+                                    devType += std::string(String(deviceClassByte, HEX).c_str()) + " (Unknown)";
+                            }
+                            break;
+                        case 0x12:
+                            devType = "0x12 Find My / AirTag";
+                            break;
+                        case 0x16:
+                            devType = "0x16 Apple Nearby Info V2";
+                            break;
+                        default:
+                            devType = "0x " + std::string(String(appleType, HEX).c_str()) + " (Unknown Apple sub-type)";
+                            break;
+                        }
+                    }
+                }
+
                 if (mac_upsert(advertisedDevice->getAddress().toString()))
                 {
                     g_new_ble++;
-                    Serial.printf(CLR_BLUE "%06lu %-9s" CLR_RED " NEW " CLR_BLUE "%s rssi=%4d %s device" CLR_RESET "\n",
+                    Serial.printf(CLR_BLUE "%06lu %-11s B1" CLR_RED " NEW " CLR_BLUE "%s %s rssi:%4d %s device" CLR_RESET "\n",
                                   millis() / 1000, "[ble]",
                                   advertisedDevice->getAddress().toString().c_str(),
+                                  advertisedDevice->getName().c_str(),
                                   advertisedDevice->getRSSI(),
-                                  isApple ? "Apple" : isAndroid ? "Android" : "unknown");
+                                  isApple ? ("Apple " + std::string(devType)).c_str() : isAndroid ? "Android"
+                                                                                                  : "unknown");
                 }
             }
         }
-
-        if (g_mode == MODE_ALL_DEVICES)
+        else
         {
             // ⚙️ EVERYTHING ELSE PATH
             // Public, Static Random, and NRPA addresses (Smart TVs, Fixed IoT, Beacons)
@@ -301,10 +374,11 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                 // printf("made it to all device mac upsert\n");
                 g_new_ble++;
                 const uint32_t now = millis();
-                Serial.printf(CLR_BLUE "%06lu %-9s" CLR_RED " NEW " CLR_BLUE "%s rssi=%4d %s" CLR_RESET "\n",
+                Serial.printf(CLR_BLUE "%06lu %-11s B2" CLR_RED " NEW " CLR_BLUE "%s %s rssi:%4d %s" CLR_RESET "\n",
                               now / 1000,
                               "[ble]",
                               advertisedDevice->getAddress().toString().c_str(),
+                              advertisedDevice->getName().c_str(),
                               advertisedDevice->getRSSI(),
                               "public-addr -> hardware/IoT");
             }
@@ -320,9 +394,9 @@ static void ble_start()
     scan->setScanCallbacks(&g_ble_callbacks, false);
     scan->setActiveScan(true);
     scan->setInterval(100); /* 100 ms cycle */
-    scan->setWindow(80);    /* 80 ms on = 80% duty, leaves air time for advertising */
+    scan->setWindow(90);    /* 90 ms on = 90% duty, leaves air time for advertising */
     scan->start(0, false);
-    Serial.printf(CLR_BLUE "%06lu %-9s ble sniffer started, interval: 100ms, window: 80ms\n" CLR_RESET, millis() / 1000, "[ble]");
+    Serial.printf(CLR_BLUE "%06lu %-11s B3 ble sniffer started, interval: 100ms, window: 90ms\n" CLR_RESET, millis() / 1000, "[ble]");
 }
 
 static void ble_init()
@@ -340,6 +414,7 @@ static TaskHandle_t g_burst_task = nullptr;
 /* Defined in the channel-hopper section; used by burst_scan_task above */
 static uint8_t g_channel = 1;
 
+// burst_scan_task started in setup()
 static void burst_scan_task(void *)
 {
     while (true)
@@ -350,62 +425,58 @@ static void burst_scan_task(void *)
         NimBLEScan *ble = NimBLEDevice::getScan();
         ble->stop();
         ble->clearResults();
-        Serial.printf(CLR_BLUE "%06lu %-9s ble scan stopped & cleared\n" CLR_RESET, millis() / 1000, "[ble]");
+        Serial.printf(CLR_BLUE "%06lu %-11s B4 reset ble hardware duplicate filter\n" CLR_RESET, millis() / 1000, "[ble]");
         ble_start();
 
         /* WiFi probing only for ALL DEVICES */
-        if (g_mode == MODE_ALL_DEVICES)
+
+        esp_wifi_set_promiscuous(false);
+        Serial.printf(CLR_YELLOW "%06lu %-11s W3 end WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
+
+        /* WiFi: active scan stimulates nearby devices to respond */
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        wifi_scan_config_t scan_cfg = {};
+        scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+        scan_cfg.scan_time.active.min = 100;
+        scan_cfg.scan_time.active.max = 200;
+        Serial.printf(CLR_YELLOW "%06lu %-11s W4 starting WiFi burst\n" CLR_RESET, millis() / 1000, "[wifi]");
+
+        if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK)
         {
-            esp_wifi_set_promiscuous(false);
-            Serial.printf(CLR_YELLOW "%06lu %-9s end WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
-
-            /* WiFi: active scan stimulates nearby devices to respond */
-            esp_wifi_set_mode(WIFI_MODE_STA);
-            wifi_scan_config_t scan_cfg = {};
-            scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-            scan_cfg.scan_time.active.min = 100;
-            scan_cfg.scan_time.active.max = 200;
-            Serial.printf(CLR_YELLOW "%06lu %-9s starting WiFi AP scan mode\n" CLR_RESET, millis() / 1000, "[wifi]");
-
-            if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK)
+            Serial.printf(CLR_YELLOW "%06lu %-11s W5 WiFi burst complete\n" CLR_RESET, millis() / 1000, "[wifi]");
+            uint16_t n = 0;
+            esp_wifi_scan_get_ap_num(&n);
+            Serial.printf(CLR_YELLOW "%06lu %-11s W6 MACs discovered: %u\n" CLR_RESET, millis() / 1000, "[wifi]", n);
+            if (n > 0)
             {
-                Serial.printf(CLR_YELLOW "%06lu %-9s WiFi AP scan complete\n" CLR_RESET, millis() / 1000, "[wifi]");
-                uint16_t n = 0;
-                esp_wifi_scan_get_ap_num(&n);
-                Serial.printf(CLR_YELLOW "%06lu %-9s APs found: %u\n" CLR_RESET, millis() / 1000, "[wifi]", n);
-                if (n > 0)
+                auto *aps = static_cast<wifi_ap_record_t *>(
+                    malloc(n * sizeof(wifi_ap_record_t)));
+                if (aps)
                 {
-                    auto *aps = static_cast<wifi_ap_record_t *>(
-                        malloc(n * sizeof(wifi_ap_record_t)));
-                    if (aps)
+                    esp_wifi_scan_get_ap_records(&n, aps);
+                    for (int i = 0; i < n; i++)
                     {
-                        esp_wifi_scan_get_ap_records(&n, aps);
-                        for (int i = 0; i < n; i++)
-                        {
-                            const uint8_t *m = aps[i].bssid;
-                            if (!mac_passes_filter(m[0]))
-                                continue;
-                            char buf[18];
-                            snprintf(buf, sizeof(buf),
-                                     "%02x:%02x:%02x:%02x:%02x:%02x",
-                                     m[0], m[1], m[2], m[3], m[4], m[5]);
-                            if (mac_upsert(buf))
-                                Serial.printf(CLR_YELLOW "%06lu %-9s" CLR_RED " NEW AP " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
-                        }
-                        free(aps);
+                        const uint8_t *m = aps[i].bssid;
+                        if (g_mode == MODE_PHONE_ESTIMATE && !mac_passes_filter(m[0]))
+                            continue;
+                        char buf[18];
+                        snprintf(buf, sizeof(buf),
+                                 "%02x:%02x:%02x:%02x:%02x:%02x",
+                                 m[0], m[1], m[2], m[3], m[4], m[5]);
+                        if (mac_upsert(buf))
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W7" CLR_RED " NEW WiFi " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
                     }
+                    free(aps);
                 }
             }
-            Serial.printf(CLR_YELLOW "%06lu %-9s end WiFi AP scan mode\n" CLR_RESET, millis() / 1000, "[wifi]");
-
-            esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb);
-            esp_wifi_set_channel(g_channel, WIFI_SECOND_CHAN_NONE);
-            esp_wifi_set_mode(WIFI_MODE_NULL);
-            Serial.printf(CLR_YELLOW "%06lu %-9s starting WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
-            esp_wifi_set_promiscuous(true);
-            Serial.printf(CLR_YELLOW "%06lu %-9s burst done — mode=%s MACs=%u\n" CLR_RESET,
-                          millis() / 1000, "[wifi]", counter_mode_label(), counter_get());
         }
+        // Serial.printf(CLR_YELLOW "%06lu %-11s W8 end WiFi AP scan mode\n" CLR_RESET, millis() / 1000, "[wifi]");
+
+        esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb);
+        esp_wifi_set_channel(g_channel, WIFI_SECOND_CHAN_NONE);
+        esp_wifi_set_mode(WIFI_MODE_NULL);
+        Serial.printf(CLR_YELLOW "%06lu %-11s W9 starting WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
+        esp_wifi_set_promiscuous(true);
     }
 }
 
@@ -455,8 +526,8 @@ void counter_init()
                             nullptr, 1, &g_burst_task,
                             0); /* Pin explicitly to Core 0 */
     const uint32_t now = millis();
-    Serial.printf(CLR_GREEN "%06lu %-9s burst scheduling started, pinned to Core: %d\n" CLR_RESET, now / 1000, "[counter]", xTaskGetCoreID(g_burst_task));
-    Serial.printf(CLR_GREEN "%06lu %-9s init complete \n" CLR_RESET, now / 1000, "[counter]");
+    Serial.printf(CLR_GREEN "%06lu %-11s C4 burst scheduling started, pinned to Core: %d\n" CLR_RESET, now / 1000, "[counter]", xTaskGetCoreID(g_burst_task));
+    Serial.printf(CLR_GREEN "%06lu %-11s C5 init complete \n" CLR_RESET, now / 1000, "[counter]");
 }
 
 uint32_t counter_get()
@@ -479,7 +550,8 @@ void counter_tick()
         g_last_hop_ms = now;
         hop_channel();
     }
-    if (now - g_last_evict_ms >= 10'000)
+    // evict every 5 seconds in phone estimate, 10 seconds for all devices
+    if (now - g_last_evict_ms >= (g_mode == MODE_PHONE_ESTIMATE ? 5'000 : 10'000))
     {
         g_last_evict_ms = now;
         evict_stale();
@@ -502,7 +574,7 @@ void counter_toggle_mode()
      * without waiting up to 60 s */
     g_last_burst_ms = millis();
     xTaskNotifyGive(g_burst_task);
-    Serial.printf(CLR_GREEN "%06lu %-9s mode → %s\n" CLR_RESET, millis() / 1000, "[counter]", counter_mode_label());
+    Serial.printf(CLR_GREEN "%06lu %-11s C6 mode → %s\n" CLR_RESET, millis() / 1000, "[counter]", counter_mode_label());
 }
 
 CounterMode counter_get_mode() { return g_mode; }
@@ -520,7 +592,7 @@ void counter_set_rssi(int dbm)
     mac_clear();
     g_last_burst_ms = millis();
     xTaskNotifyGive(g_burst_task);
-    Serial.printf(CLR_GREEN "%06lu %-9s RSSI threshold → %d dBm\n" CLR_RESET, millis() / 1000, "[counter]", g_rssi_threshold);
+    Serial.printf(CLR_GREEN "%06lu %-11s C7 RSSI threshold → %d dBm\n" CLR_RESET, millis() / 1000, "[counter]", g_rssi_threshold);
 }
 
 int counter_get_rssi() { return g_rssi_threshold; }

@@ -22,7 +22,7 @@ static bool g_bat_charging = false;
 static void battery_init() {
     /* Wire is already initialised by display_init(); pass -1 to skip re-init */
     g_pmu_ok = PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, -1, -1);
-    Serial.printf("%06lu %-9s AXP2101: %s\n", millis() / 1000, "[battery]", g_pmu_ok ? "found" : "not found");
+    Serial.printf("%06lu %-11s P1 AXP2101: %s\n", millis() / 1000, "[battery]", g_pmu_ok ? "found" : "not found");
 }
 
 static void battery_refresh() {
@@ -101,7 +101,7 @@ void setup() {
     esp_log_level_set("i2c.master",       ESP_LOG_NONE);
     esp_log_level_set("esp32-hal-i2c-ng.c", ESP_LOG_NONE);
     esp_log_level_set("Wire.cpp",         ESP_LOG_NONE);
-    Serial.printf("\n%06lu %-9s HAXXcounter booting\n", millis() / 1000, "[status]");
+    Serial.printf("\n%06lu %-9s S1 HAXXcounter booting\n", millis() / 1000, "[status]");
 
     pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
     display_init();      /* initialises I2C */
@@ -124,7 +124,7 @@ void setup() {
     ui_update_rssi_indicator(counter_get_rssi());
     ui_update_battery_indicator(battery_percent(), battery_charging());
 
-    Serial.printf("%06lu %-9s HAXXcounter ready  RSSI: %d dBm  battery: %d%%\n",
+    Serial.printf("%06lu %-11s S2 HAXXcounter ready  RSSI: %d dBm  battery: %d%%\n",
                   millis() / 1000, "[status]", counter_get_rssi(), battery_percent());
 }
 
@@ -161,7 +161,7 @@ void loop() {
         g_last_status_ms = now;
         CounterStats cs = counter_pop_stats();
         Serial.printf(
-            "%06lu %-9s count=%u  +wifi=%u  +ble=%u  -evict=%u  skip=%u"
+            "%06lu %-11s S3 count=%u  +wifi=%u  +ble=%u  -evict=%u  skip=%u"
             "  mode=%s  rssi=%d  ch=%u  bat=%d%%  alert=%s\n",
             now / 1000, "[status]", cs.table_size,
             cs.new_wifi, cs.new_ble, cs.evicted,
