@@ -101,7 +101,7 @@ void setup() {
     esp_log_level_set("i2c.master",       ESP_LOG_NONE);
     esp_log_level_set("esp32-hal-i2c-ng.c", ESP_LOG_NONE);
     esp_log_level_set("Wire.cpp",         ESP_LOG_NONE);
-    Serial.printf("\n%06lu %-9s S1 HAXXcounter booting\n", millis() / 1000, "[status]");
+    Serial.printf("\n%06lu %-11s S1 HAXXcounter booting\n", millis() / 1000, "[status]");
 
     pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
     display_init();      /* initialises I2C */
