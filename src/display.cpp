@@ -69,7 +69,7 @@ static bool     g_in_long_press = false;
 /* Brightness levels — cycles dim→bright, wraps */
 static const uint8_t k_brightness[]  = {10, 30, 55, 80, 105, 130, 160, 190, 220, 255};
 static const int     k_num_levels    = 10;
-static int           g_bright_idx    = 1;    /* start at 30 */
+static int           g_bright_idx    = 4;    /* start at 105 */
 static int           g_bright_dir    = -1;   /* -1 = dimming, +1 = brightening */
 
 /* -------------------------------------------------------------------------
@@ -205,7 +205,7 @@ void display_init() {
     Wire.beginTransmission(CST816_ADDR);
     bool is_v2   = (Wire.endTransmission() == 0);
     g_touch_addr = is_v2 ? CST816_ADDR : FT3168_ADDR;
-    Serial.printf("%06lu %-11s D1 pcb board %s — touch @ 0x%02X\n",
+    Serial.printf("%06lu %-11s D1  pcb board %s — touch @ 0x%02X\n",
                   millis() / 1000, "[display]",
                   is_v2 ? "V2 (CO5300/CST816S)" : "V1 (SH8601/FT3168)",
                   g_touch_addr);
@@ -224,7 +224,7 @@ void display_init() {
                                    DISPLAY_WIDTH, DISPLAY_HEIGHT);
     }
     if (!g_gfx->begin())
-        Serial.printf("%06lu %-11s D2 panel begin() failed\n", millis() / 1000, "[display]");
+        Serial.printf("%06lu %-11s D2  panel begin() failed\n", millis() / 1000, "[display]");
     g_gfx->fillScreen(0x0000);
 
     /* LVGL */
@@ -261,7 +261,7 @@ void display_init() {
     lv_indev_drv_register(&g_indev_drv);
 
     g_gfx->setBrightness(k_brightness[g_bright_idx]);
-    Serial.printf("%06lu %-11s D4 %dx%d AMOLED ready, LVGL %d.%d.%d\n",
+    Serial.printf("%06lu %-11s D4  %dx%d AMOLED ready, LVGL %d.%d.%d\n",
                 millis() / 1000, "[display]",
                   DISPLAY_WIDTH, DISPLAY_HEIGHT,
                   LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
@@ -283,7 +283,7 @@ void display_step_brightness() {
     else if (g_bright_idx <= 0)           { g_bright_idx = 0;                g_bright_dir = +1; }
     uint8_t level = k_brightness[g_bright_idx];
     g_gfx->setBrightness(level);
-    Serial.printf("%06lu %-11s D5 brightness → %u\n", millis() / 1000, "[display]", level);
+    Serial.printf("%06lu %-11s D5  brightness → %u\n", millis() / 1000, "[display]", level);
 }
 
 

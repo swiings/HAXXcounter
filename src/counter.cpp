@@ -23,6 +23,7 @@
 #define CLR_YELLOW "\033[33m"
 #define CLR_CYAN "\033[36m"
 #define CLR_HYEL "\033[0;93m"
+#define CLR_C164 "\033[38;5;164m"
 
 /* =========================================================================
    Mode and RSSI threshold
@@ -147,7 +148,7 @@ static void mac_clear()
     {
         g_macs.clear();
         xSemaphoreGive(g_mac_mutex);
-        Serial.printf(CLR_GREEN "%06lu %-11s C1 cleared MAC table\n" CLR_RESET, millis() / 1000, "[counter]");
+        Serial.printf(CLR_GREEN "%06lu %-11s C1  cleared MAC table\n" CLR_RESET, millis() / 1000, "[counter]");
     }
 }
 
@@ -164,7 +165,7 @@ static void evict_stale()
 
             if ((now - it->second) > dedupTimer)
             {
-                Serial.printf(CLR_GREEN "%06lu %-11s C2 stale MAC: %s\n" CLR_RESET,
+                Serial.printf(CLR_GREEN "%06lu %-11s C2  stale MAC " CLR_C164 "%s\n" CLR_RESET,
                               millis() / 1000, "[counter]", it->first.c_str());
                 it = g_macs.erase(it);
                 n++;
@@ -179,7 +180,7 @@ static void evict_stale()
     g_evicted += n;
     if (g_evicted > 0 && n > 0)
     {
-        Serial.printf(CLR_GREEN "%06lu %-11s C3 evicted %u stale MAC(s)\n" CLR_RESET,
+        Serial.printf(CLR_GREEN "%06lu %-11s C3  evicted %u stale MAC(s)\n" CLR_RESET,
                       millis() / 1000, "[counter]", g_evicted.load());
     }
 }
@@ -303,16 +304,15 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
     if (g_mode == MODE_PHONE_ESTIMATE && is_router)
     {
         g_filtered_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W11" CLR_CYAN " SKIP WiFi MAC, " CLR_YELLOW "%s %s Not a Personal Device" CLR_RESET "\n",
-                      millis() / 1000, "[wifi]", buf18,
-                      " Router/AP, ");
+        Serial.printf(CLR_YELLOW "%06lu %-11s W11" CLR_CYAN " SKIP WiFi MAC, " CLR_C164 "%s " CLR_YELLOW "router/AP, Not a Personal Device" CLR_RESET "\n",
+                      millis() / 1000, "[wifi]", buf18);
         return;
     }
 
     if (g_mode == MODE_PHONE_ESTIMATE && !randomized)
     {
         g_filtered_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W6" CLR_CYAN " SKIP WiFi MAC, " CLR_YELLOW "%s %s Not a Personal Device" CLR_RESET "\n",
+        Serial.printf(CLR_YELLOW "%06lu %-11s W6 " CLR_CYAN " SKIP WiFi MAC, " CLR_C164 "%s " CLR_YELLOW "hardware/AP, Not a Personal Device" CLR_RESET "\n",
                       millis() / 1000, "[wifi]", buf18,
                       " hardware/AP, ");
         return;
@@ -320,7 +320,7 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
     if (mac_upsert(buf18))
     {
         g_new_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W1" CLR_RED " NEW WiFi " CLR_YELLOW "%s rssi=%4d %s\n" CLR_RESET,
+        Serial.printf(CLR_YELLOW "%06lu %-11s W1 " CLR_RED " NEW WiFi " CLR_C164 "%s " CLR_YELLOW "rssi=%4d %s\n" CLR_RESET,
                       millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi,
                       randomized ? "random-MAC-> phone/tablet"
                                  : "OUI-MAC-> hardware/AP");
@@ -350,7 +350,7 @@ static void wifi_init()
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filt));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
-    Serial.printf(CLR_YELLOW "%06lu %-11s W2 WiFi promiscuous sniffer running\n" CLR_RESET, millis() / 1000, "[wifi]", millis() / 1000);
+    Serial.printf(CLR_YELLOW "%06lu %-11s W2  WiFi promiscuous sniffer running\n" CLR_RESET, millis() / 1000, "[wifi]", millis() / 1000);
 }
 
 /* =========================================================================
@@ -460,7 +460,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         if (showAllMacsTestData)
         {
             // --- Print the unique profile to Serial Monitor ---
-            Serial.printf(CLR_BLUE "%06lu %-11s B6 " CLR_BBLUE "MAC:" CLR_BLUE " %s  " CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
+            Serial.printf(CLR_BLUE "%06lu %-11s B6  " CLR_BBLUE "MAC:" CLR_BLUE " %s  " CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
                           millis() / 1000, "[ble]", macAddress.c_str(), structuralFingerprint.c_str(), mfgDataHex.c_str(), txPower);
         }
 
@@ -582,7 +582,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                     }
 
                     // --- Print the unique profile to Serial Monitor ---
-                    Serial.printf(CLR_BLUE "%06lu %-11s B6 " CLR_BBLUE "MAC:" CLR_BLUE " %s  " CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
+                    Serial.printf(CLR_BLUE "%06lu %-11s B6  " CLR_BBLUE "MAC:" CLR_BLUE " %s  " CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
                                   millis() / 1000, "[ble]", macAddress.c_str(), structuralFingerprint.c_str(), mfgDataHex.c_str(), txPower);
                 }
 
@@ -673,7 +673,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         {
             // fiter this one out
             g_filtered_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B5" CLR_CYAN " SKIP %s MAC, " CLR_BLUE "%s %s Not a Personal Device" CLR_RESET "\n",
+            Serial.printf(CLR_BLUE "%06lu %-11s B5 " CLR_CYAN " SKIP %s MAC, " CLR_C164 "%s " CLR_BLUE "%s Not a Personal Device" CLR_RESET "\n",
                           millis() / 1000, "[ble]",
                           advertisedDevice->getAddress().isRpa() ? "RPA" : "Public",
                           advertisedDevice->getAddress().toString().c_str(),
@@ -685,7 +685,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         {
             // filter this one out
             g_filtered_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B0" CLR_CYAN " SKIP MAC, RSSI Too Low, " CLR_BLUE "%s %s rssi:%4d" CLR_RESET "\n",
+            Serial.printf(CLR_BLUE "%06lu %-11s B0 " CLR_CYAN " SKIP MAC, RSSI Too Low, " CLR_C164 "%s " CLR_BLUE "%s rssi:%4d " CLR_RESET "\n",
                           millis() / 1000, "[ble]",
                           advertisedDevice->getAddress().toString().c_str(),
                           advertisedDevice->getName().c_str(),
@@ -699,7 +699,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         if (mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data))
         {
             g_new_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B1" CLR_RED " NEW BLE " CLR_BLUE "%s %s %s rssi:%4d %s device" CLR_RESET "\n",
+            Serial.printf(CLR_BLUE "%06lu %-11s B1 " CLR_RED " NEW BLE " CLR_C164 "%s " CLR_BLUE "%s %s rssi:%4d %s device" CLR_RESET "\n",
                           millis() / 1000, "[ble]",
                           advertisedDevice->getAddress().toString().c_str(),
                           mfgDataHex.c_str(),
@@ -712,7 +712,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         {
             // Not added since it was a duplicate
             g_filtered_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B7" CLR_CYAN " SKIP DUP MAC, " CLR_BLUE "%s %s %s rssi:%4d %s device" CLR_RESET "\n",
+            Serial.printf(CLR_BLUE "%06lu %-11s B7 " CLR_CYAN " SKIP DUP MAC, " CLR_C164 "%s " CLR_BLUE "%s %s rssi:%4d %s device" CLR_RESET "\n",
                           millis() / 1000, "[ble]",
                           advertisedDevice->getAddress().toString().c_str(),
                           mfgDataHex.c_str(),
@@ -734,7 +734,7 @@ static void ble_start()
     scan->setInterval(100); /* 100 ms cycle */
     scan->setWindow(90);    /* 90 ms on = 90% duty, leaves air time for advertising */
     scan->start(0, false);
-    Serial.printf(CLR_BLUE "%06lu %-11s B3 BLE sniffer started, interval: 100ms, window: 90ms\n" CLR_RESET, millis() / 1000, "[ble]");
+    Serial.printf(CLR_BLUE "%06lu %-11s B3  BLE sniffer started, interval: 100ms, window: 90ms\n" CLR_RESET, millis() / 1000, "[ble]");
 }
 
 static void ble_init()
@@ -763,13 +763,13 @@ static void burst_scan_task(void *)
         NimBLEScan *ble = NimBLEDevice::getScan();
         ble->stop();
         ble->clearResults();
-        Serial.printf(CLR_BLUE "%06lu %-11s B4 reset BLE hardware duplicate filter\n" CLR_RESET, millis() / 1000, "[ble]");
+        Serial.printf(CLR_BLUE "%06lu %-11s B4  reset BLE hardware duplicate filter\n" CLR_RESET, millis() / 1000, "[ble]");
         ble_start();
 
         /* WiFi probing only for ALL DEVICES */
 
         esp_wifi_set_promiscuous(false);
-        Serial.printf(CLR_YELLOW "%06lu %-11s W3 end WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
+        Serial.printf(CLR_YELLOW "%06lu %-11s W3  end WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
 
         /* WiFi: active scan stimulates nearby devices to respond */
         esp_wifi_set_mode(WIFI_MODE_STA);
@@ -777,13 +777,13 @@ static void burst_scan_task(void *)
         scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
         scan_cfg.scan_time.active.min = 100;
         scan_cfg.scan_time.active.max = 200;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W4 starting WiFi burst\n" CLR_RESET, millis() / 1000, "[wifi]");
+        Serial.printf(CLR_YELLOW "%06lu %-11s W4  starting WiFi burst\n" CLR_RESET, millis() / 1000, "[wifi]");
 
         if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK)
         {
             uint16_t n = 0;
             esp_wifi_scan_get_ap_num(&n);
-            Serial.printf(CLR_YELLOW "%06lu %-11s W5 WiFi burst complete. %u MAC(s) to analyze\n" CLR_RESET, millis() / 1000, "[wifi]", n);
+            Serial.printf(CLR_YELLOW "%06lu %-11s W5  WiFi burst complete. %u MAC(s) to analyze\n" CLR_RESET, millis() / 1000, "[wifi]", n);
             if (n > 0)
             {
                 auto *aps = static_cast<wifi_ap_record_t *>(
@@ -801,12 +801,12 @@ static void burst_scan_task(void *)
 
                         if (g_mode == MODE_PHONE_ESTIMATE && !mac_passes_filter(m[0]))
                         {
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W10" CLR_CYAN " SKIP MAC " CLR_YELLOW "%s, Not a Personal Device\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W10" CLR_CYAN " SKIP MAC " CLR_C164 "%s" CLR_YELLOW ", Not a Personal Device\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
                             continue;
                         }
 
                         if (mac_upsert(buf))
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W7" CLR_RED " NEW WiFi " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W7 " CLR_RED " NEW WiFi " CLR_C164 "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
                     }
                     free(aps);
                 }
@@ -817,7 +817,7 @@ static void burst_scan_task(void *)
         esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb);
         esp_wifi_set_channel(g_channel, WIFI_SECOND_CHAN_NONE);
         esp_wifi_set_mode(WIFI_MODE_NULL);
-        Serial.printf(CLR_YELLOW "%06lu %-11s W9 starting WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
+        Serial.printf(CLR_YELLOW "%06lu %-11s W9  starting WiFi promiscuous mode\n" CLR_RESET, millis() / 1000, "[wifi]");
         esp_wifi_set_promiscuous(true);
     }
 }
@@ -868,8 +868,8 @@ void counter_init()
                             nullptr, 1, &g_burst_task,
                             0); /* Pin explicitly to Core 0 */
     const uint32_t now = millis();
-    Serial.printf(CLR_GREEN "%06lu %-11s C4 burst scheduling started, pinned to Core: %d\n" CLR_RESET, now / 1000, "[counter]", xTaskGetCoreID(g_burst_task));
-    Serial.printf(CLR_GREEN "%06lu %-11s C5 init complete \n" CLR_RESET, now / 1000, "[counter]");
+    Serial.printf(CLR_GREEN "%06lu %-11s C4  burst scheduling started, pinned to Core: %d\n" CLR_RESET, now / 1000, "[counter]", xTaskGetCoreID(g_burst_task));
+    Serial.printf(CLR_GREEN "%06lu %-11s C5  init complete \n" CLR_RESET, now / 1000, "[counter]");
 }
 
 uint32_t counter_get()
@@ -916,7 +916,7 @@ void counter_toggle_mode()
      * without waiting up to 60 s */
     g_last_burst_ms = millis();
     xTaskNotifyGive(g_burst_task);
-    Serial.printf(CLR_GREEN "%06lu %-11s C6 mode set to → %s\n" CLR_RESET, millis() / 1000, "[counter]", counter_mode_label());
+    Serial.printf(CLR_GREEN "%06lu %-11s C6  mode set to → %s\n" CLR_RESET, millis() / 1000, "[counter]", counter_mode_label());
 }
 
 CounterMode counter_get_mode() { return g_mode; }
@@ -934,7 +934,7 @@ void counter_set_rssi(int dbm)
     mac_clear();
     g_last_burst_ms = millis();
     xTaskNotifyGive(g_burst_task);
-    Serial.printf(CLR_GREEN "%06lu %-11s C7 RSSI threshold set to → %d dBm\n" CLR_RESET, millis() / 1000, "[counter]", g_rssi_threshold);
+    Serial.printf(CLR_GREEN "%06lu %-11s C7  RSSI threshold set to → %d dBm\n" CLR_RESET, millis() / 1000, "[counter]", g_rssi_threshold);
 }
 
 int counter_get_rssi() { return g_rssi_threshold; }
