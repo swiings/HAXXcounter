@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+/** HAXXcounter Build Version */
+constexpr const char *HAXXCOUNTER_VERSION = "v0.13.0";
+
 /** Sliding-window duration in milliseconds (120 s) */
 constexpr uint32_t DEDUP_WINDOW_MS   = 120'000;
 
@@ -48,3 +51,6 @@ void counter_set_rssi(int dbm);
 
 /** Returns the current RSSI threshold in dBm. */
 int  counter_get_rssi();
+
+/** Print every MAC-table entry and its age to the serial log (PWR long press). */
+void counter_dump_table();

@@ -86,56 +86,60 @@ static std::string mac_table_key(const std::string &mac, const std::string &manu
     return manufacturer_key.empty() ? mac : manufacturer_key;
 }
 
-// static bool mac_upsert(const std::string &mac, const std::string &manufacturer_data = "")
-// {
-//     const std::string key = mac_table_key(mac, manufacturer_data);
-//     bool is_new = false;
-//     if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE)
-//     {
-//         is_new = (g_macs.count(key) == 0);
-//         g_macs[key] = millis();
-//         xSemaphoreGive(g_mac_mutex);
-//     }
-//     return is_new;
-// }
-
 /* Returns true if the key was not already in the table (genuinely new device).
  * When BLE manufacturer data is present it is used as the dedupe identity so
  * rotating random MACs from the same handset are not double-counted.
- */
-static bool mac_upsert(const std::string &mac, const std::string &manufacturer_data = "")
+ * passing_rssi=false keeps an already-known device alive but never counts it. */
+static bool mac_upsert(const std::string &mac, const std::string &manufacturer_data = "", bool passing_rssi = true)
 {
-    std::string masked_mfg = manufacturer_data;
+    std::string identity = manufacturer_data;
 
-    // Added [0] and [1] to check the first two bytes of the string
+    /* Apple devices: use the FULL payload as identity. Truncating to 3 bytes
+     * would merge every iPhone broadcasting the same message type. AirPods
+     * (0x07) keep 6 bytes so the dynamic battery byte doesn't fork identity. */
     if (manufacturer_data.size() >= 4 &&
         (unsigned char)manufacturer_data[0] == 0x4C &&
-        (unsigned char)manufacturer_data[1] == 0x00)
+        (unsigned char)manufacturer_data[1] == 0x00 &&
+        (unsigned char)manufacturer_data[2] == 0x07 &&
+        manufacturer_data.size() >= 6)
     {
-
-        // Added [2] to get the protocol type byte
-        unsigned char protocol_type = (unsigned char)manufacturer_data[2];
-
-        if (protocol_type == 0x07 && manufacturer_data.size() >= 6)
-        {
-            // AirPods / Beats: Keep Company ID, Type, Length, and 2-byte Hardware Model ID
-            masked_mfg = manufacturer_data.substr(0, 6);
-        }
-        else
-        {
-            // For Nearby Info (0x10), Continuity (0x0C), Nearby V2 (0x16), and all other Apple types:
-            // Keep just the Company ID (2 bytes) + Protocol Type (1 byte) = 3 bytes total
-            masked_mfg = manufacturer_data.substr(0, 3);
-        }
+        identity = manufacturer_data.substr(0, 6);
     }
 
-    const std::string key = mac + "_" + masked_mfg;
+    /* Hex-encode so keys are printable and binary NULs can't truncate logs */
+    const std::string key = mac + "_" + manufacturer_data_to_key(identity);
     bool is_new = false;
 
     if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE)
     {
-        is_new = (g_macs.count(key) == 0);
-        g_macs[key] = millis();
+        /* A matching mfg identity means the same device even when the BLE
+         * random MAC has rotated — refresh that entry and report duplicate. */
+        if (!identity.empty())
+        {
+            const std::string suffix = "_" + manufacturer_data_to_key(identity);
+            for (auto &entry : g_macs)
+            {
+                const std::string &k = entry.first;
+                if (k.size() >= suffix.size() &&
+                    k.compare(k.size() - suffix.size(), suffix.size(), suffix) == 0)
+                {
+                    entry.second = millis();
+                    xSemaphoreGive(g_mac_mutex);
+                    return false;
+                }
+            }
+        }
+
+        auto it = g_macs.find(key);
+        if (it == g_macs.end() && passing_rssi)
+        {
+            g_macs[key] = millis();
+            is_new = true;
+        }
+        else if (it != g_macs.end())
+        {
+            it->second = millis(); /* hysteresis: weak sighting still keeps device alive */
+        }
         xSemaphoreGive(g_mac_mutex);
     }
 
@@ -396,14 +400,21 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
             manufacturer_data = advertisedDevice->getManufacturerData();
         }
 
+        std::string device_name = advertisedDevice->haveName() ? advertisedDevice->getName() : "Unknown device";
+
+        if (advertisedDevice->haveManufacturerData())
+        {
+            manufacturer_data = advertisedDevice->getManufacturerData();
+        }
+
         bool isActualPhone = false;
         bool isApple = false;
         bool isAndroid = false;
         std::string devType = "";
         // uint16_t companyId = 0;
 
-        // Start Test code
-        bool showAllMacsTestData = false;
+        // Test code flags to show all MACs or just phones for debugging
+        bool showAllMacsTestData = true;  // Set to true to show all MACs for debugging 
         bool showJustPhonesTestData = false;
 
         // 1. Get the current MAC Address
@@ -457,14 +468,14 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
             txPower = advertisedDevice->getTXPower();
         }
 
-        if (showAllMacsTestData)
+        if (showAllMacsTestData)    // Show all MACs for debugging
         {
             // --- Print the unique profile to Serial Monitor ---
-            Serial.printf(CLR_BLUE "%06lu %-11s B6  " CLR_BBLUE "MAC:" CLR_BLUE " %s  " CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
-                          millis() / 1000, "[ble]", macAddress.c_str(), structuralFingerprint.c_str(), mfgDataHex.c_str(), txPower);
-        }
+            Serial.printf(CLR_BLUE "%06lu %-11s B6  " CLR_BBLUE "MAC:" CLR_BLUE " %s %s" CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
+                          millis() / 1000, "[ble]", macAddress.c_str(), device_name.c_str(), structuralFingerprint.c_str(), mfgDataHex.c_str(), txPower);
 
-        // End Test code
+
+        }
 
         if (address.isRpa()) //  RPA devices are the newer phones and other devices that might change MACs randomly.
         {
@@ -481,7 +492,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
 
                     if (companyId == 0x004C)
                     {
-                        // 🍏 Apple iPhone, iPad, Apple Watch, AirPods, AirTags
+                        // 🍏 Apple iPhone, iPad, Apple Watch, AirPods, AirTags, MBP
                         isActualPhone = true;
                         isApple = true;
                     }
@@ -608,7 +619,8 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                             break;
 
                         case 0x0C:
-                            devType = "0x0C Continuity / Handoff data (often a Mac or iPhone)";
+                            devType = "0x0C Continuity / Handoff data / MBP";
+                            isActualPhone = false;
                             break;
 
                         case 0x10:
@@ -653,7 +665,8 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                             break;
 
                         case 0x16:
-                            devType = "0x16 Apple Nearby Info V2";
+                            devType = "0x16 Apple Nearby Info V2 MBP";
+                            isActualPhone = false;
                             break;
 
                         default:
@@ -683,7 +696,9 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
 
         if (advertisedDevice->getRSSI() < g_rssi_threshold)
         {
-            // filter this one out
+            /* Hysteresis: refresh a known device so a dip in signal doesn't
+             * evict it, but never count below the threshold. */
+            mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data, false);
             g_filtered_ble++;
             Serial.printf(CLR_BLUE "%06lu %-11s B0 " CLR_CYAN " SKIP MAC, RSSI Too Low, " CLR_C164 "%s " CLR_BLUE "%s rssi:%4d " CLR_RESET "\n",
                           millis() / 1000, "[ble]",
@@ -799,14 +814,19 @@ static void burst_scan_task(void *)
                                  "%02x:%02x:%02x:%02x:%02x:%02x",
                                  m[0], m[1], m[2], m[3], m[4], m[5]);
 
-                        if (g_mode == MODE_PHONE_ESTIMATE && !mac_passes_filter(m[0]))
+                        /* In people-estimate mode, burst-scan results are APs
+                         * (infrastructure), never phones — skip them all. */
+                        if (g_mode == MODE_PHONE_ESTIMATE)
                         {
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W10" CLR_CYAN " SKIP MAC " CLR_C164 "%s" CLR_YELLOW ", Not a Personal Device\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
+                            g_filtered_wifi++;
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W10" CLR_CYAN " SKIP MAC " CLR_C164 "%s " CLR_YELLOW "%s, AP Not a Personal Device\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                             continue;
                         }
 
                         if (mac_upsert(buf))
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W7 " CLR_RED " NEW WiFi " CLR_C164 "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf);
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W7 " CLR_RED " NEW WiFi " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
+                        else
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W12 " CLR_CYAN " SKIP DUP MAC " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                     }
                     free(aps);
                 }
@@ -938,3 +958,22 @@ void counter_set_rssi(int dbm)
 }
 
 int counter_get_rssi() { return g_rssi_threshold; }
+
+void counter_dump_table()
+{
+    if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        const uint32_t now = millis();
+        Serial.printf(CLR_GREEN "%06lu %-11s C8  MAC table dump — %u %s\n" CLR_RESET,
+                      now / 1000, "[counter]", (unsigned)g_macs.size(),
+                      g_macs.size() == 1 ? "entry" : "entries");
+        for (const auto &entry : g_macs)
+        {
+            Serial.printf(CLR_GREEN "%06lu %-11s C9  %s  age=%lus\n" CLR_RESET,
+                          now / 1000, "[counter]",
+                          entry.first.c_str(),
+                          (unsigned long)((now - entry.second) / 1000));
+        }
+        xSemaphoreGive(g_mac_mutex);
+    }
+}

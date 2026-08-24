@@ -257,7 +257,7 @@ void ui_init() {
     /* Header */
     lv_obj_t *title_box = make_label_backdrop(scr, LV_ALIGN_TOP_MID, 14);
     lv_obj_t *title = lv_label_create(title_box);
-    lv_label_set_text(title, "HAXXcounter");
+    lv_label_set_text_fmt(title, "HAXXcounter %s", HAXXCOUNTER_VERSION);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_22, LV_PART_MAIN);
     lv_obj_set_style_text_color(title, lv_color_hex(0xC0C0FF), LV_PART_MAIN);
     lv_obj_center(title);
