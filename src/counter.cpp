@@ -28,7 +28,6 @@
 /* =========================================================================
    Mode and RSSI threshold
    ========================================================================= */
-static CounterMode g_mode = MODE_PHONE_ESTIMATE;
 static int g_rssi_threshold = RSSI_DEFAULT;
 
 /* Returns true if this MAC should be counted in the current mode.
@@ -38,22 +37,29 @@ static int g_rssi_threshold = RSSI_DEFAULT;
  * OUI MACs (headphones, LoRa radios, APs, IoT) have this bit clear. */
 static inline bool mac_passes_filter(uint8_t first_byte)
 {
-    if (g_mode == MODE_ALL_DEVICES)
-        return true;
-
-    uint8_t second_nibble = (first_byte & 0x0F);
-
-    /* return true if locally administered or random MAC */
-    return (second_nibble == 0x02 || second_nibble == 0x06 || second_nibble == 0x0A || second_nibble == 0x0E);
-
-    // return (first_byte & 0x02) != 0; /* locally administered = random MAC */
+    return true;
 }
 
 /* =========================================================================
    MAC table
    ========================================================================= */
-static std::map<std::string, uint32_t> g_macs;
 static SemaphoreHandle_t g_mac_mutex = nullptr;
+
+enum class MacSource : uint8_t
+{
+    WIFI,
+    BLE
+};
+
+struct MacEntry
+{
+    uint32_t last_seen;
+    MacSource source;
+    bool is_phone;
+    std::string name; /* WiFi: probed/AP SSID — the only "name" WiFi gives us */
+};
+
+static std::map<std::string, MacEntry> g_macs;
 
 /* Per-interval counters — written from WiFi/BLE tasks, read+reset from main task. */
 static std::atomic<uint32_t> g_new_wifi{0};
@@ -90,7 +96,8 @@ static std::string mac_table_key(const std::string &mac, const std::string &manu
  * When BLE manufacturer data is present it is used as the dedupe identity so
  * rotating random MACs from the same handset are not double-counted.
  * passing_rssi=false keeps an already-known device alive but never counts it. */
-static bool mac_upsert(const std::string &mac, const std::string &manufacturer_data = "", bool passing_rssi = true)
+static bool mac_upsert(const std::string &mac, const std::string &manufacturer_data = "", bool passing_rssi = true,
+                       MacSource source = MacSource::BLE, bool is_phone = false, const std::string &name = "")
 {
     std::string identity = manufacturer_data;
 
@@ -123,7 +130,9 @@ static bool mac_upsert(const std::string &mac, const std::string &manufacturer_d
                 if (k.size() >= suffix.size() &&
                     k.compare(k.size() - suffix.size(), suffix.size(), suffix) == 0)
                 {
-                    entry.second = millis();
+                    entry.second.last_seen = millis();
+                    if (entry.second.name.empty() && !name.empty())
+                        entry.second.name = name;
                     xSemaphoreGive(g_mac_mutex);
                     return false;
                 }
@@ -133,19 +142,20 @@ static bool mac_upsert(const std::string &mac, const std::string &manufacturer_d
         auto it = g_macs.find(key);
         if (it == g_macs.end() && passing_rssi)
         {
-            g_macs[key] = millis();
+            g_macs[key] = {millis(), source, is_phone, name};
             is_new = true;
         }
         else if (it != g_macs.end())
         {
-            it->second = millis(); /* hysteresis: weak sighting still keeps device alive */
+            it->second.last_seen = millis(); /* hysteresis: weak sighting still keeps device alive */
+            if (it->second.name.empty() && !name.empty())
+                it->second.name = name;
         }
         xSemaphoreGive(g_mac_mutex);
     }
 
     return is_new;
 }
-
 static void mac_clear()
 {
     if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE)
@@ -164,10 +174,7 @@ static void evict_stale()
     {
         for (auto it = g_macs.begin(); it != g_macs.end();)
         {
-            // if people/phones only, evict in half the time
-            uint32_t dedupTimer = g_mode == MODE_PHONE_ESTIMATE ? DEDUP_WINDOW_MS / 2 : DEDUP_WINDOW_MS;
-
-            if ((now - it->second) > dedupTimer)
+            if ((now - it->second.last_seen) > DEDUP_WINDOW_MS)
             {
                 Serial.printf(CLR_GREEN "%06lu %-11s C2  stale MAC " CLR_C164 "%s\n" CLR_RESET,
                               millis() / 1000, "[counter]", it->first.c_str());
@@ -182,11 +189,11 @@ static void evict_stale()
         xSemaphoreGive(g_mac_mutex);
     }
     g_evicted += n;
-    if (g_evicted > 0 && n > 0)
-    {
-        Serial.printf(CLR_GREEN "%06lu %-11s C3  evicted %u stale MAC(s)\n" CLR_RESET,
-                      millis() / 1000, "[counter]", g_evicted.load());
-    }
+    // if (g_evicted > 0 && n > 0)
+    // {
+    //     Serial.printf(CLR_GREEN "%06lu %-11s C3  evicted %u stale MAC(s)\n" CLR_RESET,
+    //                   millis() / 1000, "[counter]", g_evicted.load());
+    // }
 }
 
 /* =========================================================================
@@ -197,79 +204,6 @@ static void evict_stale()
 #define MGMT_TYPE 0
 #define PROBE_REQ_SUB 4
 #define SRC_MAC_OFFSET 10
-
-// static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type)
-// {
-//     if (type != WIFI_PKT_MGMT)
-//         return;
-//     const wifi_promiscuous_pkt_t *pkt = reinterpret_cast<const wifi_promiscuous_pkt_t *>(buf);
-//     const uint8_t *frame = pkt->payload;
-//     if (pkt->rx_ctrl.sig_len < 24)
-//         return;
-//     if (FC_TYPE(frame[0]) != MGMT_TYPE)
-//         return;
-//     if (FC_SUBTYPE(frame[0]) != PROBE_REQ_SUB)
-//         return;
-
-//     /* Drop frames below the RSSI threshold (too far away) */
-//     if (pkt->rx_ctrl.rssi < g_rssi_threshold)
-//         return;
-
-//     /* In 802.11 frames the source MAC is in big-endian order;
-//      * frame[SRC_MAC_OFFSET] is the first byte (the OUI/flag byte). */
-//     const uint8_t first_byte = frame[SRC_MAC_OFFSET];
-//     /* Bit 1 of first_byte is the IEEE "locally administered" flag.
-//      * Set → device randomised its own MAC (phones/tablets).
-//      * Clear → MAC was assigned by the manufacturer (hardware OUI). */
-//     const bool is_random = (first_byte & 0x02) != 0;
-
-//     if (g_mode == MODE_PHONE_ESTIMATE && !mac_passes_filter(first_byte))
-//     {
-//         g_filtered_wifi++;
-//         return;
-//     }
-
-//     char buf18[18];
-//     const uint8_t *m = frame + SRC_MAC_OFFSET;
-//     snprintf(buf18, sizeof(buf18), "%02x:%02x:%02x:%02x:%02x:%02x",
-//              m[0], m[1], m[2], m[3], m[4], m[5]);
-
-//     if (mac_upsert(buf18))
-//     {
-//         g_new_wifi++;
-//         Serial.printf(CLR_YELLOW "%06lu %-11s W1" CLR_RED " NEW WiFi " CLR_YELLOW "%s rssi=%4d %s\n" CLR_RESET,
-//                       millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi,
-//                       is_random ? "random-MAC  -> phone/tablet"
-//                                 : "OUI-MAC     -> hardware/AP");
-//     }
-// }
-
-bool has_netgear_vendor_id(const uint8_t *payload, uint16_t length)
-{
-    // 802.11 management frames usually have the body start around byte 24 or 36
-    // loop through the Information Elements (IEs)
-    int index = 36;
-    while (index < length - 2)
-    {
-        uint8_t ie_id = payload[index];
-        uint8_t ie_len = payload[index + 1];
-
-        // IE 221 (0xDD) is the Vendor Specific Element
-        if (ie_id == 0xDD && ie_len >= 3)
-        {
-            // Check if the next 3 bytes match Netgear's Vendor OUI
-            // Netgear uses a few, 00:14:6C is very common
-            if (payload[index + 2] == 0x00 &&
-                payload[index + 3] == 0x14 &&
-                payload[index + 4] == 0x6C)
-            {
-                return true; // Confirmed Netgear-generated packet!
-            }
-        }
-        index += 2 + ie_len; // Move to the next IE block
-    }
-    return false;
-}
 
 static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
@@ -290,44 +224,38 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
 
     // Byte 0 contains Frame Type and Subtype. 0x40 is a Probe Request.
     uint8_t frame_control = payload[0];
-    bool is_probe_request = (frame_control == 0x40);
+    bool is_probe_request = (frame_control == 0x40 || frame_control == 0x00);
 
     // Source MAC address is located at bytes 10 to 15 in the 802.11 header
     uint8_t *src_mac = &payload[10];
-
-    // Analyze the Fingerprint
-    bool randomized = mac_passes_filter(src_mac[0]);
 
     char buf18[18];
     snprintf(buf18, sizeof(buf18), "%02x:%02x:%02x:%02x:%02x:%02x",
              src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
 
-    // Call a method to determine if this might be a router that randomizes the MAC, like Netgear
-    bool is_router = has_netgear_vendor_id(payload, packet_length);
-
-    if (g_mode == MODE_PHONE_ESTIMATE && is_router)
+    /* Directed probe requests carry the SSID tag (element ID 0) right after
+     * the 24-byte header; wildcard probes have a zero-length tag (no name). */
+    std::string wifi_name;
+    if (packet_length > 26 && payload[24] == 0)
     {
-        g_filtered_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W11" CLR_CYAN " SKIP WiFi MAC, " CLR_C164 "%s " CLR_YELLOW "router/AP, Not a Personal Device" CLR_RESET "\n",
-                      millis() / 1000, "[wifi]", buf18);
-        return;
+        uint8_t elem_len = payload[25];
+        if (elem_len > 0 && (size_t)(26 + elem_len) <= packet_length)
+            wifi_name.assign(reinterpret_cast<const char *>(&payload[26]), elem_len);
     }
 
-    if (g_mode == MODE_PHONE_ESTIMATE && !randomized)
+    if (mac_upsert(buf18, "", true, MacSource::WIFI, false, wifi_name))
     {
-        g_filtered_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W6 " CLR_CYAN " SKIP WiFi MAC, " CLR_C164 "%s " CLR_YELLOW "hardware/AP, Not a Personal Device" CLR_RESET "\n",
-                      millis() / 1000, "[wifi]", buf18,
-                      " hardware/AP, ");
-        return;
-    }
-    if (mac_upsert(buf18))
-    {
+        // bump the counters
         g_new_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W1 " CLR_RED " NEW WiFi " CLR_C164 "%s " CLR_YELLOW "rssi=%4d %s\n" CLR_RESET,
-                      millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi,
-                      randomized ? "random-MAC-> phone/tablet"
-                                 : "OUI-MAC-> hardware/AP");
+        Serial.printf(CLR_YELLOW "%06lu %-11s W1 " CLR_RED " NEW WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET,
+                      millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
+    }
+    else
+    {
+        // duplicate sighting, already in the mac table
+        g_filtered_wifi++;
+        if (SHOW_DUPLICATES)
+            Serial.printf(CLR_YELLOW "%06lu %-11s W12" CLR_CYAN " DUP WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET, millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
     }
 }
 
@@ -357,390 +285,235 @@ static void wifi_init()
     Serial.printf(CLR_YELLOW "%06lu %-11s W2  WiFi promiscuous sniffer running\n" CLR_RESET, millis() / 1000, "[wifi]", millis() / 1000);
 }
 
+// Helper function to safely read bytes from the manufacturer data
+uint8_t get_byte(const std::string &data, size_t index)
+{
+    return static_cast<uint8_t>(data[index]);
+}
+
 /* =========================================================================
    BLE — passive scan
    ========================================================================= */
 class HAXXScanCallbacks : public NimBLEScanCallbacks
 {
-    // void onDiscovered(const NimBLEAdvertisedDevice *dev) override
-    // {
-    //     if (dev->getRSSI() < g_rssi_threshold)
-    //         return;
-
-    //     /* BLE public address = hardware OUI (like a WiFi AP MAC).
-    //      * BLE random address = device-generated for privacy (like phones). */
-    //     const bool is_public = dev->getAddress().isPublic();
-
-    //     if (g_mode == MODE_PHONE_ESTIMATE && is_public)
-    //     {
-    //         g_filtered_ble++;
-    //         return;
-    //     }
-
-    //     if (mac_upsert(dev->getAddress().toString()))
-    //     {
-    //         g_new_ble++;
-    //         const uint32_t now = millis();
-    //         Serial.printf(CLR_BLUE "%06lu %-11s" CLR_RED " NEW " CLR_BLUE "%s rssi=%4d %s" CLR_RESET "\n",
-    //                       now / 1000,
-    //                       "[ble]",
-    //                       dev->getAddress().toString().c_str(),
-    //                       dev->getRSSI(),
-    //                       is_public ? "public-addr -> hardware/IoT"
-    //                                 : "random-addr -> phone/tablet");
-    //     }
-    // }
-
     void onResult(const NimBLEAdvertisedDevice *advertisedDevice)
     {
         NimBLEAddress address = advertisedDevice->getAddress();
-        std::string manufacturer_data;
-        if (advertisedDevice->haveManufacturerData())
-        {
-            manufacturer_data = advertisedDevice->getManufacturerData();
-        }
 
         std::string device_name = advertisedDevice->haveName() ? advertisedDevice->getName() : "Unknown device";
+        std::string macAddress = advertisedDevice->getAddress().toString();
+
+        // // 4. Extract Tx Power Level (Type 0x0A)
+        // int txPower = 0;
+        // bool hasTxPower = advertisedDevice->haveTXPower();
+        // if (hasTxPower)
+        // {
+        //     txPower = advertisedDevice->getTXPower();
+        // }
+
+        bool is_this_a_phone = false;
 
         if (advertisedDevice->haveManufacturerData())
         {
-            manufacturer_data = advertisedDevice->getManufacturerData();
-        }
+            std::string manufacturer_data = advertisedDevice->haveManufacturerData() ? advertisedDevice->getManufacturerData() : "";
+            const std::string manufacturer_hex = manufacturer_data_to_key(manufacturer_data); // for logging/debugging purposes
 
-        bool isActualPhone = false;
-        bool isApple = false;
-        bool isAndroid = false;
-        std::string devType = "";
-        // uint16_t companyId = 0;
+            size_t data_len = manufacturer_data.length();
 
-        // Test code flags to show all MACs or just phones for debugging
-        bool showAllMacsTestData = true;  // Set to true to show all MACs for debugging 
-        bool showJustPhonesTestData = false;
-
-        // 1. Get the current MAC Address
-        String macAddress = advertisedDevice->getAddress().toString().c_str();
-
-        // 2. Extract Raw Payload Bytes using the new vector format
-        const std::vector<uint8_t> &payload = advertisedDevice->getPayload();
-        size_t payloadLength = payload.size();
-
-        String structuralFingerprint = "";
-        size_t index = 0;
-
-        // Parse the raw payload into individual AD structures
-        while (index < payloadLength)
-        {
-            uint8_t length = payload[index]; // Vectors support array indexing []
-            if (length == 0)
-                break; // End of packet
-
-            if (index + length < payloadLength)
+            // Manufacturer data must contain at least 2 bytes for the Company ID
+            if (data_len >= 2)
             {
-                uint8_t type = payload[index + 1];
-                // Build a signature of [Length:Type] pairs
-                structuralFingerprint += "[" + String(length) + ":" + String(type, HEX) + "]";
-            }
-            index += length + 1; // Move to the next AD structure
-        }
 
-        // 3. Extract Manufacturer Specific Data (Type 0xFF)
-        String mfgDataHex = "";
-        if (advertisedDevice->haveManufacturerData())
-        {
-            std::string mfgData = advertisedDevice->getManufacturerData();
-            for (char &c : mfgData)
-            {
-                char buf[3];
-                sprintf(buf, "%02X", (unsigned char)c);
-                mfgDataHex += buf;
-            }
-        }
-        else
-        {
-            mfgDataHex = "NONE";
-        }
+                uint8_t id0 = get_byte(manufacturer_data, 0);
+                uint8_t id1 = get_byte(manufacturer_data, 1);
 
-        // 4. Extract Tx Power Level (Type 0x0A)
-        int txPower = 0;
-        bool hasTxPower = advertisedDevice->haveTXPower();
-        if (hasTxPower)
-        {
-            txPower = advertisedDevice->getTXPower();
-        }
-
-        if (showAllMacsTestData)    // Show all MACs for debugging
-        {
-            // --- Print the unique profile to Serial Monitor ---
-            Serial.printf(CLR_BLUE "%06lu %-11s B6  " CLR_BBLUE "MAC:" CLR_BLUE " %s %s" CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
-                          millis() / 1000, "[ble]", macAddress.c_str(), device_name.c_str(), structuralFingerprint.c_str(), mfgDataHex.c_str(), txPower);
-
-
-        }
-
-        if (address.isRpa()) //  RPA devices are the newer phones and other devices that might change MACs randomly.
-        {
-            if (advertisedDevice->haveManufacturerData())
-            {
-                // printf("has manufacturer data\n");
-                std::string data = advertisedDevice->getManufacturerData();
-
-                // Manufacturer data must contain at least 2 bytes for the Company ID
-                if (data.length() >= 2)
+                // 1. APPLE CHECK (Company ID: 0x004C)
+                if (id0 == 0x4C && id1 == 0x00)
                 {
-                    // Extract the 16-bit Company Identifier (Little Endian format)
-                    uint16_t companyId = (uint8_t)data[1] << 8 | (uint8_t)data[0];
+                    // Serial.printf(CLR_MAG "%06lu %-11s B7  Apple manufacturer data: %s\n" CLR_RESET,
+                    //          millis() / 1000, "[ble]", manufacturer_hex.c_str());
 
-                    if (companyId == 0x004C)
+                    size_t index = 2; // Skip past 2-byte company identifier
+
+                    while (index + 2 <= data_len)
                     {
-                        // 🍏 Apple iPhone, iPad, Apple Watch, AirPods, AirTags, MBP
-                        isActualPhone = true;
-                        isApple = true;
-                    }
-                    else if (companyId == 0x00E0)
-                    {
-                        // Google Pixel Phones, Pixel Buds
-                        isActualPhone = true;
-                        isAndroid = true;
-                    }
-                    else if (companyId == 0x0075)
-                    {
-                        // Samsung Galaxy Phones, Galaxy Buds, Galaxy SmartTags
-                        isActualPhone = true;
-                        isAndroid = true;
-                    }
-                    else if (companyId == 0x0006)
-                    {
-                        // Microsoft Windows Laptops, Surface Tablets
-                        isActualPhone = false;
-                        isAndroid = false;
-                    }
-                    else if (companyId == 0x0059)
-                    {
-                        // Nordic Semi DIY Beacons, smart trackables, fitness tech
-                        isActualPhone = false;
-                        isAndroid = false;
-                    }
-                }
-            }
+                        uint8_t applePacketType = get_byte(manufacturer_data, index);
+                        uint8_t packetLength = get_byte(manufacturer_data, index + 1);
 
-            // Additional Android check: Google frequently broadcasts via Service UUIDs instead
-            if (!isActualPhone && advertisedDevice->haveServiceUUID())
-            {
-                NimBLEUUID serviceUUID = advertisedDevice->getServiceUUID();
-                // 0xFE2C = Google Fast Pair Service, 0xFD5A = Find My Device
-                if (serviceUUID.toString() == "0xfe2c" || serviceUUID.toString() == "0xfd5a")
-                {
-                    // 🤖 Android Phone/Tablet detected via service packet
-                    isActualPhone = true;
-                    isAndroid = true;
-                }
-            }
+                        // Serial.printf(CLR_MAG "%06lu %-11s B8  004c packet, data length is valid " CLR_C164 "%s %s\n" CLR_RESET,
+                        //               millis() / 1000, "[ble]",
+                        //               advertisedDevice->getAddress().toString().c_str(),
+                        //               manufacturer_hex.c_str());
 
-            // if (g_mode == MODE_PHONE_ESTIMATE && isActualPhone)
-            if (isActualPhone)
-            {
-                if (showJustPhonesTestData)
-                {
-                    // 1. Get the current MAC Address
-                    String macAddress = advertisedDevice->getAddress().toString().c_str();
-
-                    // 2. Extract Raw Payload Bytes using the new vector format
-                    const std::vector<uint8_t> &payload = advertisedDevice->getPayload();
-                    size_t payloadLength = payload.size();
-
-                    String structuralFingerprint = "";
-                    size_t index = 0;
-
-                    // Parse the raw payload into individual AD structures
-                    while (index < payloadLength)
-                    {
-                        uint8_t length = payload[index]; // Vectors support array indexing []
-                        if (length == 0)
-                            break; // End of packet
-
-                        if (index + length < payloadLength)
+                        // CRITICAL PROTECTION: Prevent length overflows and infinite loops
+                        if (packetLength == 0 || (index + 2 + packetLength) > data_len)
                         {
-                            uint8_t type = payload[index + 1];
-                            // Build a signature of [Length:Type] pairs
-                            structuralFingerprint += "[" + String(length) + ":" + String(type, HEX) + "]";
+                            Serial.printf(CLR_RED "%06lu %-11s B5  malformed Apple manufacturer data: length=%zu, index=%zu, packetLength=%u\n" CLR_RESET,
+                                          millis() / 1000, "[ble]", data_len, index, packetLength);
+                            break;
                         }
-                        index += length + 1; // Move to the next AD structure
-                    }
 
-                    // 3. Extract Manufacturer Specific Data (Type 0xFF)
-                    String mfgDataHex = "";
-                    if (advertisedDevice->haveManufacturerData())
-                    {
-                        std::string mfgData = advertisedDevice->getManufacturerData();
-                        for (char &c : mfgData)
+                        // Apple (0x4C) parsing loop
+                        if (applePacketType == 0x10 || applePacketType == 0x07)
                         {
-                            char buf[3];
-                            sprintf(buf, "%02X", (unsigned char)c);
-                            mfgDataHex += buf;
-                        }
-                    }
-                    else
-                    {
-                        mfgDataHex = "NONE";
-                    }
+                            uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
 
-                    // 4. Extract Tx Power Level (Type 0x0A)
-                    int txPower = 0;
-                    bool hasTxPower = advertisedDevice->haveTXPower();
-                    if (hasTxPower)
-                    {
-                        txPower = advertisedDevice->getTXPower();
-                    }
-
-                    // --- Print the unique profile to Serial Monitor ---
-                    Serial.printf(CLR_BLUE "%06lu %-11s B6  " CLR_BBLUE "MAC:" CLR_BLUE " %s  " CLR_BBLUE "Fingerprint:" CLR_BLUE " %s  " CLR_BBLUE "mfgData:" CLR_BLUE " %s  " CLR_BBLUE "txPower:" CLR_BLUE " %d  " CLR_RESET "\n",
-                                  millis() / 1000, "[ble]", macAddress.c_str(), structuralFingerprint.c_str(), mfgDataHex.c_str(), txPower);
-                }
-
-                // End Test code
-
-                if (isApple)
-                {
-                    std::string data = advertisedDevice->getManufacturerData();
-                    uint8_t appleType = (uint8_t)data[2];
-                    uint8_t appleLength = (uint8_t)data[3];
-
-                    // Check if the packet is actually as long as Apple claims it is
-                    if ((size_t)data.length() >= (size_t)(4 + appleLength))
-                    {
-                        switch (appleType)
-                        {
-                        case 0x02:
-                            devType = "0x02 iBeacon";
-                            break;
-
-                        case 0x07:
-                            devType = "0x07 AirPods";
-                            break;
-
-                        case 0x0C:
-                            devType = "0x0C Continuity / Handoff data / MBP";
-                            isActualPhone = false;
-                            break;
-
-                        case 0x10:
-                            devType = "0x10 Nearby Info / Action with subtype ";
-                            // Ensure we have at least one byte of data in the payload to check
-                            if (appleLength > 0 && data.length() >= 5)
+                            if ((appleActionSubType == 0x0C ||  // Handoff
+                                 appleActionSubType == 0x07 ||  // Hotspot
+                                 appleActionSubType == 0x30 ||  // Nearby Active
+                                 appleActionSubType == 0x05 ||  // AirDrop
+                                 appleActionSubType == 0x34 ||  // Nearby Status
+                                 appleActionSubType == 0x2B) && // Tethering
+                                packetLength >= 5)
                             {
-                                uint8_t deviceClassByte = (uint8_t)data[4];
+                                is_this_a_phone = true;
+                                Serial.printf(CLR_BLUE "%06lu %-11s B15 Apple " CLR_RESET "phone " CLR_BLUE "detected via Continuity. " CLR_C164 "%s %s " CLR_BLUE "Apple action type==0x%02X : subtype=0x%02X\n" CLR_RESET,
+                                              millis() / 1000, "[ble]",
+                                              advertisedDevice->getAddress().toString().c_str(),
+                                              manufacturer_hex.c_str(),
+                                              applePacketType, appleActionSubType);
+                                break;
+                            }
+                            // Note: 0x09 (Find My) is excluded here because MacBooks, AirTags, and iPads all broadcast it.
+                            // Serial.printf(CLR_GREEN "%06lu %-11s B9  Apple packet type==0x%02X : subtype=0x%02X\n" CLR_RESET,
+                            //               millis() / 1000, "[ble]", applePacketType, appleActionSubType);
+                        }
+                        else if (applePacketType == 0x12) // Proximity Beacon
+                        {
+                            uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
+                            // Serial.printf(CLR_GREEN "%06lu %-11s B12 Apple packet type==0x%02X : subtype=0x%02X\n" CLR_RESET,
+                            //               millis() / 1000, "[ble]", applePacketType, appleActionSubType);
 
-                                // Filter based on known device flags / classes inside 0x10
-                                if (deviceClassByte == 0x2C || deviceClassByte == 0x02 || deviceClassByte == 0x0C)
+                            if (packetLength == 2)
+                            {
+                                uint8_t deviceClass = get_byte(manufacturer_data, index + 2);
+                                // 0xD0 or 0xD4 indicates an Apple Watch. 0x00 values are generic sleep pings.
+                                if (deviceClass != 0xD0 && deviceClass != 0xD4 && deviceClass != 0x00)
                                 {
-                                    devType += "0x2C, 0x02, or 0x0C (iPhone)";
-                                }
-                                else if (deviceClassByte == 0x0E)
-                                {
-                                    devType += "0x0E (Apple Watch)";
-                                }
-                                else if (deviceClassByte == 0x20 || deviceClassByte == 0x4C)
-                                {
-                                    devType += "0x20 or 0x4C (Mac / MacBook)";
-                                }
-                                else if (deviceClassByte == 0x39 || deviceClassByte == 0x30)
-                                {
-                                    devType += "0x39/0x30 (iOS Device - likely iPad or iPhone)";
-                                }
-                                else if (deviceClassByte == 0x3C)
-                                {
-                                    devType += "0x3C (iPad)";
-                                }
-                                else
-                                {
-                                    char hexBuf[4];
-                                    sprintf(hexBuf, "%02X", deviceClassByte);
-                                    devType += std::string(hexBuf) + " (Unknown)";
+                                    is_this_a_phone = true;
+                                    Serial.printf(CLR_MAG "%06lu %-11s B16 Apple " CLR_RESET "phone " CLR_BLUE "detected via Proximity (0x12)\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                                  millis() / 1000, "[ble]",
+                                                  advertisedDevice->getAddress().toString().c_str(),
+                                                  manufacturer_hex.c_str());
+                                    break;
                                 }
                             }
-                            break;
-
-                        case 0x12:
-                            devType = "0x12 Find My / AirTag";
-                            break;
-
-                        case 0x16:
-                            devType = "0x16 Apple Nearby Info V2 MBP";
-                            isActualPhone = false;
-                            break;
-
-                        default:
-                        {
-                            char hexBuf[4];
-                            sprintf(hexBuf, "%02X", appleType);
-                            devType = "0x" + std::string(hexBuf) + " (Unknown Apple sub-type)";
-                            break;
+                            else if (packetLength >= 15)
+                            {
+                                // Long 0x12 packets (like your 25-byte hits) are usually iPhones tracking state,
+                                // but let's make sure it isn't an Apple Watch setup stream
+                                uint8_t streamType = get_byte(manufacturer_data, index + 2);
+                                if (streamType != 0xD0)
+                                {
+                                    is_this_a_phone = true;
+                                    Serial.printf(CLR_MAG "%06lu %-11s B6  Apple " CLR_RESET "phone " CLR_BLUE "detected via Long Proximity\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                                  millis() / 1000, "[ble]",
+                                                  advertisedDevice->getAddress().toString().c_str(),
+                                                  manufacturer_hex.c_str());
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                Serial.printf(CLR_RED "%06lu %-11s B10 malformed Apple Proximity Beacon data: length=%zu, index=%zu, packetLength=%u\n" CLR_RESET,
+                                              millis() / 1000, "[ble]", data_len, index, packetLength);
+                            }
                         }
+                        else if (applePacketType == 0x16) // Nearby Info
+                        {
+                            uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
+                            // Serial.printf(CLR_GREEN "%06lu %-11s B12 Apple packet type==0x%02X : subtype=0x%02X\n" CLR_RESET,
+                            //               millis() / 1000, "[ble]", applePacketType, appleActionSubType);
+
+                            if (packetLength == 8)
+                            {
+                                uint8_t flags = get_byte(manufacturer_data, index + 2);
+                                // On a MacBook or AppleTV, the primary Nearby Info byte is highly predictable (typically 0x00 or 0x04).
+                                // iPhones shifting states usually broadcast a dynamic bitmask (like 0x20, 0x1C, 0x0C).
+                                if (flags != 0x00 && flags != 0x04)
+                                {
+                                    is_this_a_phone = true;
+                                    Serial.printf(CLR_GREEN "%06lu %-11s B14 Apple " CLR_BBLUE "phone " CLR_BLUE "detected via Nearby Info (0x16)\n" CLR_RESET, millis() / 1000, "[ble]");
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                Serial.printf(CLR_RED "%06lu %-11s B11 malformed Apple Nearby Info data: length=%zu, index=%zu, packetLength=%u\n" CLR_RESET,
+                                              millis() / 1000, "[ble]", data_len, index, packetLength);
+                            }
+                        }
+
+                        // Advance safely inside the boundaries
+                        index += 2 + packetLength;
+                    }
+                }
+                // 2. SAMSUNG CHECK (Company ID: 0x0075)
+                else if (id0 == 0x75 && id1 == 0x00 && data_len >= 4)
+                {
+                    uint8_t samsungDataType = get_byte(manufacturer_data, 2);
+
+                    // 0x01, 0x02, 0x03 map to SmartThings presence/proximity
+                    if (samsungDataType == 0x01 || samsungDataType == 0x02 || samsungDataType == 0x03)
+                    {
+                        // SMARTPHONE FILTER: SmartTags use predictable, fixed short packets (under 9 bytes)
+                        // Phones broadcasting state/sync tags send much longer byte lists (> 12 bytes)
+                        if (data_len > 11)
+                        {
+                            is_this_a_phone = true;
                         }
                     }
                 }
+                // 3. GOOGLE / ANDROID QUICK SHARE CHECK (Company ID: 0x00E0)
+                else if (id0 == 0xE0 && id1 == 0x00)
+                {
+                    // Google Quick Share broadcasts on 0x00E0.
+                    // Simple Android beacons/tags are tiny, while Quick Share/Fast Pair frameworks
+                    // require extended metadata payloads.
+                    if (data_len >= 10)
+                    {
+                        is_this_a_phone = true;
+                    }
+                }
             }
-        }
 
-        if (g_mode == MODE_PHONE_ESTIMATE && isActualPhone == false)
-        {
-            // fiter this one out
-            g_filtered_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B5 " CLR_CYAN " SKIP %s MAC, " CLR_C164 "%s " CLR_BLUE "%s Not a Personal Device" CLR_RESET "\n",
-                          millis() / 1000, "[ble]",
-                          advertisedDevice->getAddress().isRpa() ? "RPA" : "Public",
-                          advertisedDevice->getAddress().toString().c_str(),
-                          advertisedDevice->getName().c_str());
-            return;
-        }
-
-        if (advertisedDevice->getRSSI() < g_rssi_threshold)
-        {
-            /* Hysteresis: refresh a known device so a dip in signal doesn't
-             * evict it, but never count below the threshold. */
-            mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data, false);
-            g_filtered_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B0 " CLR_CYAN " SKIP MAC, RSSI Too Low, " CLR_C164 "%s " CLR_BLUE "%s rssi:%4d " CLR_RESET "\n",
-                          millis() / 1000, "[ble]",
-                          advertisedDevice->getAddress().toString().c_str(),
-                          advertisedDevice->getName().c_str(),
-                          advertisedDevice->getRSSI());
-            return;
-        }
-
-        // Write this MAC to the MAC table and add to the counts.
-        // If a manufacturer payload is present, it becomes the dedupe identity so
-        // a rotating BLE random address from the same handset is not counted twice.
-        if (mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data))
-        {
-            g_new_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B1 " CLR_RED " NEW BLE " CLR_C164 "%s " CLR_BLUE "%s %s rssi:%4d %s device" CLR_RESET "\n",
-                          millis() / 1000, "[ble]",
-                          advertisedDevice->getAddress().toString().c_str(),
-                          mfgDataHex.c_str(),
-                          advertisedDevice->getName().c_str(),
-                          advertisedDevice->getRSSI(),
-                          isApple ? ("Apple " + std::string(devType)).c_str() : isAndroid ? "Android"
-                                                                                          : "unknown");
-        }
-        else
-        {
-            // Not added since it was a duplicate
-            g_filtered_ble++;
-            Serial.printf(CLR_BLUE "%06lu %-11s B7 " CLR_CYAN " SKIP DUP MAC, " CLR_C164 "%s " CLR_BLUE "%s %s rssi:%4d %s device" CLR_RESET "\n",
-                          millis() / 1000, "[ble]",
-                          advertisedDevice->getAddress().toString().c_str(),
-                          mfgDataHex.c_str(),
-                          advertisedDevice->getName().c_str(),
-                          advertisedDevice->getRSSI(),
-                          isApple ? ("Apple " + std::string(devType)).c_str() : isAndroid ? "Android"
-                                                                                          : "unknown");
+            // Write this MAC to the MAC table and add to the counts.
+            // If a manufacturer payload is present, it becomes the dedupe identity so
+            // a rotating BLE random address from the same handset is not counted twice.
+            if (mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data, true,
+                           MacSource::BLE, is_this_a_phone))
+            {
+                // bump the counters
+                g_new_ble++;
+                Serial.printf(CLR_BLUE "%06lu %-11s B1  " CLR_RED "NEW BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_BBLUE "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                              millis() / 1000, "[ble]",
+                              advertisedDevice->getAddress().toString().c_str(),
+                              manufacturer_hex.c_str(),
+                              advertisedDevice->getName().c_str(),
+                              is_this_a_phone ? "phone " : "",
+                              advertisedDevice->getRSSI());
+            }
+            else
+            {
+                // already exists in the mac table, a duplicate sighting
+                g_filtered_ble++;
+                if (SHOW_DUPLICATES)
+                {
+                    Serial.printf(CLR_BLUE "%06lu %-11s B13 " CLR_CYAN "DUP BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_BBLUE "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                                  millis() / 1000, "[ble]",
+                                  advertisedDevice->getAddress().toString().c_str(),
+                                  manufacturer_hex.c_str(),
+                                  advertisedDevice->getName().c_str(),
+                                  is_this_a_phone ? "phone " : "",
+                                  advertisedDevice->getRSSI());
+                }
+            }
+            // }
         }
     }
 };
 
 static HAXXScanCallbacks g_ble_callbacks;
-
 static void ble_start()
 {
     NimBLEScan *scan = NimBLEDevice::getScan();
@@ -813,20 +586,17 @@ static void burst_scan_task(void *)
                         snprintf(buf, sizeof(buf),
                                  "%02x:%02x:%02x:%02x:%02x:%02x",
                                  m[0], m[1], m[2], m[3], m[4], m[5]);
-
-                        /* In people-estimate mode, burst-scan results are APs
-                         * (infrastructure), never phones — skip them all. */
-                        if (g_mode == MODE_PHONE_ESTIMATE)
+                        const std::string ap_ssid(reinterpret_cast<const char *>(aps[i].ssid));
+                        if (mac_upsert(buf, "", true, MacSource::WIFI, false, ap_ssid))
+                        {
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W7 " CLR_RED " NEW WiFi device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
+                        }
+                        else
                         {
                             g_filtered_wifi++;
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W10" CLR_CYAN " SKIP MAC " CLR_C164 "%s " CLR_YELLOW "%s, AP Not a Personal Device\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
-                            continue;
+                            if (SHOW_DUPLICATES)
+                                Serial.printf(CLR_YELLOW "%06lu %-11s W13" CLR_CYAN " DUP WiFi burst device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                         }
-
-                        if (mac_upsert(buf))
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W7 " CLR_RED " NEW WiFi " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
-                        else
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W12 " CLR_CYAN " SKIP DUP MAC " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                     }
                     free(aps);
                 }
@@ -868,12 +638,26 @@ CounterStats counter_pop_stats()
     }
     s.new_wifi = g_new_wifi.exchange(0);
     s.new_ble = g_new_ble.exchange(0);
-    s.evicted = g_evicted.exchange(0);
+    if (xSemaphoreTake(g_mac_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        for (const auto &entry : g_macs)
+        {
+            if (entry.second.source == MacSource::WIFI)
+                s.live_wifi++;
+            else
+                s.live_ble++;
+            if (entry.second.is_phone)
+                s.live_phones++;
+        }
+        xSemaphoreGive(g_mac_mutex);
+    }
     s.filtered_wifi = g_filtered_wifi.exchange(0);
     s.filtered_ble = g_filtered_ble.exchange(0);
+
+    s.evicted = g_evicted.exchange(0);
+
     s.channel = g_channel;
     s.rssi = g_rssi_threshold;
-    s.mode = g_mode;
     return s;
 }
 
@@ -884,12 +668,12 @@ void counter_init()
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
     wifi_init(); //  set the callback function for, and start the WiFi promiscuous sniffer
     ble_init();  //  set the callback function for, and start the BLE scanner in Active mode
+    Serial.printf(CLR_GREEN "%06lu %-11s C4  starting burst scheduling, pinned to Core: %d\n" CLR_RESET, millis() / 1000, "[counter]", xTaskGetCoreID(g_burst_task));
+
     xTaskCreatePinnedToCore(burst_scan_task, "burst_scan", 6144,
                             nullptr, 1, &g_burst_task,
                             0); /* Pin explicitly to Core 0 */
-    const uint32_t now = millis();
-    Serial.printf(CLR_GREEN "%06lu %-11s C4  burst scheduling started, pinned to Core: %d\n" CLR_RESET, now / 1000, "[counter]", xTaskGetCoreID(g_burst_task));
-    Serial.printf(CLR_GREEN "%06lu %-11s C5  init complete \n" CLR_RESET, now / 1000, "[counter]");
+    Serial.printf(CLR_GREEN "%06lu %-11s C5  init complete \n" CLR_RESET, millis() / 1000, "[counter]");
 }
 
 uint32_t counter_get()
@@ -902,7 +686,6 @@ uint32_t counter_get()
     }
     return n;
 }
-
 void counter_tick()
 {
     uint32_t now = millis();
@@ -912,8 +695,8 @@ void counter_tick()
         g_last_hop_ms = now;
         hop_channel();
     }
-    // evict every 5 seconds in phone estimate, 10 seconds for all devices
-    if (now - g_last_evict_ms >= (g_mode == MODE_PHONE_ESTIMATE ? 5'000 : 10'000))
+    // evict every 5 seconds
+    if (now - g_last_evict_ms >= 5'000)
     {
         g_last_evict_ms = now;
         evict_stale();
@@ -925,28 +708,12 @@ void counter_tick()
     }
 }
 
-void counter_toggle_mode()
-{
-    g_mode = (g_mode == MODE_ALL_DEVICES) ? MODE_PHONE_ESTIMATE
-                                          : MODE_ALL_DEVICES;
-    /* Clear stale data so the count immediately reflects the new filter */
-    mac_clear();
-
-    /* Reset burst timer and fire immediately so fresh results arrive
-     * without waiting up to 60 s */
-    g_last_burst_ms = millis();
-    xTaskNotifyGive(g_burst_task);
-    Serial.printf(CLR_GREEN "%06lu %-11s C6  mode set to → %s\n" CLR_RESET, millis() / 1000, "[counter]", counter_mode_label());
-}
-
-CounterMode counter_get_mode() { return g_mode; }
-
 const char *counter_mode_label()
 {
-    return (g_mode == MODE_PHONE_ESTIMATE) ? "people estimate"
-                                           : "all devices";
+    static char buf[64];
+    snprintf(buf, sizeof(buf), "signals %ddBm or more", counter_get_rssi());
+    return buf;
 }
-
 void counter_set_rssi(int dbm)
 {
     g_rssi_threshold = constrain(dbm, RSSI_MIN, RSSI_MAX);
@@ -969,10 +736,16 @@ void counter_dump_table()
                       g_macs.size() == 1 ? "entry" : "entries");
         for (const auto &entry : g_macs)
         {
-            Serial.printf(CLR_GREEN "%06lu %-11s C9  %s  age=%lus\n" CLR_RESET,
+            const char *source_str = (entry.second.source == MacSource::WIFI) ? "wifi" : "ble";
+            const char *phone_suffix = entry.second.is_phone ? " phone" : "";
+            std::string name_suffix = entry.second.name.empty() ? "" : (" \"" + entry.second.name + "\"");
+            Serial.printf(CLR_GREEN "%06lu %-11s C9  %s  %s%s%s  age=%lus\n" CLR_RESET,
                           now / 1000, "[counter]",
                           entry.first.c_str(),
-                          (unsigned long)((now - entry.second) / 1000));
+                          source_str,
+                          phone_suffix,
+                          name_suffix.c_str(),
+                          (unsigned long)((now - entry.second.last_seen) / 1000));
         }
         xSemaphoreGive(g_mac_mutex);
     }

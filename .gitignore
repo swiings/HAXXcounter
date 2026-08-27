@@ -1,6 +1,9 @@
 # PlatformIO — build artifacts and auto-downloaded libraries
 .pio/
 
+# Auto-incrementing local build counter (scripts/bump_build_number.py)
+scripts/.build_number
+
 # macOS metadata
 .DS_Store
 .DS_Store?
