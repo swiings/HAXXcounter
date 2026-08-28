@@ -26,5 +26,8 @@ TouchGesture display_pop_gesture();
  *  Clears automatically on lift. */
 bool display_long_press_active();
 
+/** Enable or disable all touchscreen input. */
+void display_set_touch_enabled(bool enabled);
+
 /** Advance to the next preset brightness level (cycles dim → bright → dim). */
 void display_step_brightness();

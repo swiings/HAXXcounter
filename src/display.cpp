@@ -59,6 +59,7 @@ static int16_t  g_touch_start_y  = -1;
 static int16_t  g_touch_start_x  = -1;
 static int16_t  g_touch_last_y   = -1;
 static bool     g_was_touched    = false;
+static bool     g_touch_enabled  = true;
 
 /* Long-press detection */
 #define HOLD_THRESHOLD_MS  500
@@ -69,7 +70,7 @@ static bool     g_in_long_press = false;
 /* Brightness levels — cycles dim→bright, wraps */
 static const uint8_t k_brightness[]  = {10, 30, 55, 80, 105, 130, 160, 190, 220, 255};
 static const int     k_num_levels    = 10;
-static int           g_bright_idx    = 3;    /* start at 80 */
+static int           g_bright_idx    = 2;    /* start at 55 */
 static int           g_bright_dir    = -1;   /* -1 = dimming, +1 = brightening */
 
 /* -------------------------------------------------------------------------
@@ -117,6 +118,15 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
    FT3168 touch read callback (called by LVGL every LV_INDEV_DEF_READ_PERIOD)
    ------------------------------------------------------------------------- */
 static void touch_read_cb(lv_indev_drv_t * /*drv*/, lv_indev_data_t *data) {
+    if (!g_touch_enabled) {
+        g_pending_gesture = GESTURE_NONE;
+        g_was_touched = false;
+        g_in_long_press = false;
+        g_hold_start_ms = 0;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
     /* Read 6 registers starting at 0x01.  FT3168 (V1) and CST816S (V2) share
      * the same touch-data register layout; only the I2C address differs. */
     Wire.beginTransmission(g_touch_addr);
@@ -275,6 +285,13 @@ TouchGesture display_pop_gesture() {
 
 bool display_long_press_active() {
     return g_in_long_press;
+}
+
+void display_set_touch_enabled(bool enabled) {
+    g_touch_enabled = enabled;
+    g_pending_gesture = GESTURE_NONE;
+    g_in_long_press = false;
+    g_hold_start_ms = 0;
 }
 
 void display_step_brightness() {

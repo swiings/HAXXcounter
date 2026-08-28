@@ -19,7 +19,7 @@ static bool g_pmu_ok = false;
 static int g_bat_pct = -1; /* cached — refreshed every 30 s to avoid I2C contention */
 static bool g_bat_charging = false;
 
-static int loop_delay = 500; /* main loop delay in milliseconds */
+static int loop_delay = 500;     /* main loop delay in milliseconds */
 static int status_delay = 15000; /* status log interval in milliseconds (15 seconds) */
 
 static void battery_init()
@@ -41,21 +41,39 @@ static int battery_percent() { return g_bat_pct; }
 static bool battery_charging() { return g_bat_charging; }
 
 /* =========================================================================
-   Boot button — GPIO0, active-low, toggles counter mode
+   Boot button — GPIO0, active-low
    ========================================================================= */
 #define PIN_BOOT_BTN 0
+#define BOOT_LONG_PRESS_MS 2000
 
 static int g_btn_last = HIGH;
 static uint32_t g_btn_time_ms = 0;
+static bool g_screen_locked = false;
 
 static void button_poll()
 {
     int btn = digitalRead(PIN_BOOT_BTN);
-    if (btn == LOW && g_btn_last == HIGH &&
-        (millis() - g_btn_time_ms) > 200)
+    if (btn == LOW && g_btn_last == HIGH)
     {
         g_btn_time_ms = millis();
-        Serial.printf("%06lu %-11s B2  top button pressed\n", millis() / 1000, "[button]"    );
+    }
+    else if (btn == HIGH && g_btn_last == LOW)
+    {
+        if ((millis() - g_btn_time_ms) >= BOOT_LONG_PRESS_MS)
+        {
+            g_screen_locked = !g_screen_locked;
+            display_set_touch_enabled(!g_screen_locked);
+            ui_show_alert_overlay(g_screen_locked ? "SCREEN LOCKED" : "SCREEN UNLOCKED");
+            Serial.printf("%06lu %-11s B3  screen touch %s\n", millis() / 1000,
+                          "[button]", g_screen_locked ? "locked" : "unlocked");
+        }
+        else
+        {
+            CURRENT_SCAN_MODE = (CURRENT_SCAN_MODE == ScanMode::ALL_DEVICES) ? ScanMode::PEOPLE_DEVICES : ScanMode::ALL_DEVICES;
+            ui_set_footer(counter_mode_label());
+            Serial.printf("%06lu %-11s B2  scan mode set to %s\n", millis() / 1000,
+                          "[button]", (CURRENT_SCAN_MODE == ScanMode::ALL_DEVICES) ? "ALL_DEVICES" : "PEOPLE_DEVICES");
+        }
     }
     g_btn_last = btn;
 }
@@ -183,7 +201,7 @@ void loop()
     }
     g_was_long_press = lp;
 
-    /* Serial status line every 10 s */
+    /* Serial status line every 15 s */
     if (now - g_last_status_ms >= status_delay)
     {
         g_last_status_ms = now;
@@ -193,7 +211,7 @@ void loop()
             " mode=%s ch=%u bat=%d%% %s\n",
             now / 1000, "[status]", counter_get(),
             cs.new_wifi, cs.live_wifi, cs.new_ble, cs.live_ble, cs.live_phones, cs.evicted,
-            cs.filtered_wifi + cs.filtered_ble, 
+            cs.filtered_wifi + cs.filtered_ble,
             counter_mode_label(), cs.channel, battery_percent(),
             alert_mode_label());
     }

@@ -13,17 +13,19 @@ constexpr uint32_t HAXXCOUNTER_BUILD_NUMBER = BUILD_NUMBER;
 
 /** HAXXcounter Build Version — trailing component is HAXXCOUNTER_BUILD_NUMBER */
 constexpr const char *HAXXCOUNTER_VERSION = "v0.13." HAXXCOUNTER_STRINGIFY(BUILD_NUMBER);
-//* v0.13.6     2026-08-26  new version numbering scheme: v0.13.<build_number>  (no more minor/patch numbers)
-//* v0.13.3     2026-08-25  add SHOW_DUPLICATES to serial log to cut down on message frequency
-//* v0.13.2     2026-08-24  no more modes, always all devices, no filtering, no people estimate
-//* v0.13.1     2026-08-24  changes to counters
-//* v0.13.0     2026-08-23  first release after trimming out all the extra ble parsing code 
 
 /** Sliding-window duration in milliseconds (60 s) */
 constexpr uint32_t DEDUP_WINDOW_MS   = 60'000;
 
 /** How often the burst scan fires to refresh nearby device timestamps (60 s) */
 constexpr uint32_t BURST_INTERVAL_MS =  60'000;
+
+/** WiFi/BLE scanning mode — All devices or just people devices */
+enum class ScanMode {
+    ALL_DEVICES,
+    PEOPLE_DEVICES
+};
+extern ScanMode CURRENT_SCAN_MODE;
 
 /** RSSI threshold — frames weaker than this value are ignored.
  *  -50 = same room only  |  -70 = medium (default)  |  -90 = through walls */
