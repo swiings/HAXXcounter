@@ -24,6 +24,7 @@
 #define CLR_CYAN "\033[36m"
 #define CLR_HYEL "\033[0;93m"
 #define CLR_C164 "\033[38;5;164m"
+#define CLR_C190 "\033[38;5;190m"
 
 /* =========================================================================
    Mode and RSSI threshold
@@ -218,10 +219,6 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
     // Extract the total length from the packet control header
     uint16_t packet_length = pkt->rx_ctrl.sig_len;
 
-    /* Drop frames below the RSSI threshold (too far away) */
-    if (pkt->rx_ctrl.rssi < g_rssi_threshold)
-        return;
-
     // Byte 0 contains Frame Type and Subtype. 0x40 is a Probe Request.
     uint8_t frame_control = payload[0];
     bool is_probe_request = (frame_control == 0x40 || frame_control == 0x00);
@@ -243,11 +240,21 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
             wifi_name.assign(reinterpret_cast<const char *>(&payload[26]), elem_len);
     }
 
+    /* Drop frames below the RSSI threshold (too far away) */
+    if (pkt->rx_ctrl.rssi < g_rssi_threshold)
+    {
+        g_filtered_wifi++;
+        if (SHOW_DUPLICATES)
+            Serial.printf(CLR_YELLOW "%06lu %-11s W14 " CLR_CYAN "WiFi RSSI too low " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET,
+                          millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
+        return;
+    }
+
     if (mac_upsert(buf18, "", true, MacSource::WIFI, false, wifi_name))
     {
         // bump the counters
         g_new_wifi++;
-        Serial.printf(CLR_YELLOW "%06lu %-11s W1 " CLR_RED " NEW WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET,
+        Serial.printf(CLR_YELLOW "%06lu %-11s W1  " CLR_RED "NEW WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET,
                       millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
     }
     else
@@ -255,7 +262,7 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
         // duplicate sighting, already in the mac table
         g_filtered_wifi++;
         if (SHOW_DUPLICATES)
-            Serial.printf(CLR_YELLOW "%06lu %-11s W12" CLR_CYAN " DUP WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET, millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
+            Serial.printf(CLR_YELLOW "%06lu %-11s W12 " CLR_CYAN "DUP WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET, millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
     }
 }
 
@@ -303,14 +310,6 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         std::string device_name = advertisedDevice->haveName() ? advertisedDevice->getName() : "Unknown device";
         std::string macAddress = advertisedDevice->getAddress().toString();
 
-        // // 4. Extract Tx Power Level (Type 0x0A)
-        // int txPower = 0;
-        // bool hasTxPower = advertisedDevice->haveTXPower();
-        // if (hasTxPower)
-        // {
-        //     txPower = advertisedDevice->getTXPower();
-        // }
-
         bool is_this_a_phone = false;
 
         if (advertisedDevice->haveManufacturerData())
@@ -354,20 +353,38 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                         }
 
                         // Apple (0x4C) parsing loop
-                        if (applePacketType == 0x10 || applePacketType == 0x07)
+                        if (applePacketType == 0x07)
+                        {
+                            is_this_a_phone = true;
+                            Serial.printf(CLR_BLUE "%06lu %-11s B11 " CLR_C190 "iPhone " CLR_BLUE "detected via AirPods (0x07)\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                          millis() / 1000, "[ble]",
+                                          advertisedDevice->getAddress().toString().c_str(),
+                                          manufacturer_hex.c_str());
+                            break;
+                        }
+
+                        if (applePacketType == 0x10)
                         {
                             uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
+                            // Serial.printf(CLR_BLUE "%06lu %-11s B15 " CLR_BLUE "before Phone test" CLR_C164 "%s %s " CLR_BLUE "Apple action type==0x%02X : subtype=0x%02X\n" CLR_RESET,
+                            //               millis() / 1000, "[ble]",
+                            //               advertisedDevice->getAddress().toString().c_str(),
+                            //               manufacturer_hex.c_str(),
+                            //               applePacketType, appleActionSubType);
 
-                            if ((appleActionSubType == 0x0C ||  // Handoff
-                                 appleActionSubType == 0x07 ||  // Hotspot
-                                 appleActionSubType == 0x30 ||  // Nearby Active
-                                 appleActionSubType == 0x05 ||  // AirDrop
-                                 appleActionSubType == 0x34 ||  // Nearby Status
-                                 appleActionSubType == 0x2B) && // Tethering
-                                packetLength >= 5)
+                            if (appleActionSubType == 0x02 || // Screen locked
+                                appleActionSubType == 0x07 || // Active User / Screen On
+                                appleActionSubType == 0x09 || // Active User / Video/Media Focus
+                                appleActionSubType == 0x05 || // Audio Playing / Screen Locked:
+                                appleActionSubType == 0x08 || // Wi-Fi Password Sharing
+                                appleActionSubType == 0x3D || // (UWB) Spatial Proximity
+                                appleActionSubType == 0x03 || // Idle User
+                                appleActionSubType == 0x0F || // Nearby Action Trigger
+                                appleActionSubType == 0x4D || // Universal Clipboard:
+                                appleActionSubType == 0x01)   // Activity Reporting Disabled)
                             {
                                 is_this_a_phone = true;
-                                Serial.printf(CLR_BLUE "%06lu %-11s B15 Apple " CLR_RESET "phone " CLR_BLUE "detected via Continuity. " CLR_C164 "%s %s " CLR_BLUE "Apple action type==0x%02X : subtype=0x%02X\n" CLR_RESET,
+                                Serial.printf(CLR_BLUE "%06lu %-11s B15 " CLR_C190 "Apple personal device " CLR_BLUE "detected " CLR_C164 "%s %s action:0x%02X subtype:0x%02X\n" CLR_RESET,
                                               millis() / 1000, "[ble]",
                                               advertisedDevice->getAddress().toString().c_str(),
                                               manufacturer_hex.c_str(),
@@ -387,12 +404,12 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                             if (packetLength == 2)
                             {
                                 uint8_t deviceClass = get_byte(manufacturer_data, index + 2);
-                                // 0xD0 or 0xD4 indicates an Apple Watch. 0x00 values are generic sleep pings.
-                                if (deviceClass != 0xD0 && deviceClass != 0xD4 && deviceClass != 0x00)
-                                {
-                                    is_this_a_phone = true;
-                                    Serial.printf(CLR_MAG "%06lu %-11s B16 Apple " CLR_RESET "phone " CLR_BLUE "detected via Proximity (0x12)\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                if (deviceClass == 0xD0 || deviceClass == 0xD4)                                 {
+                                    is_this_a_phone = false ;
+                                    Serial.printf(CLR_BLUE "%06lu %-11s B16 " CLR_BLUE "signal detected from deviceclass:0x%02X and applePacketType:0x%02X\n" CLR_C164 "%s %s\n" CLR_RESET,
                                                   millis() / 1000, "[ble]",
+                                                  deviceClass,
+                                                  applePacketType,
                                                   advertisedDevice->getAddress().toString().c_str(),
                                                   manufacturer_hex.c_str());
                                     break;
@@ -406,7 +423,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                                 if (streamType != 0xD0)
                                 {
                                     is_this_a_phone = true;
-                                    Serial.printf(CLR_MAG "%06lu %-11s B6  Apple " CLR_RESET "phone " CLR_BLUE "detected via Long Proximity\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                    Serial.printf(CLR_MAG "%06lu %-11s B6  " CLR_C190 "iPhone " CLR_BLUE "detected via Long Proximity\n" CLR_C164 "%s %s\n" CLR_RESET,
                                                   millis() / 1000, "[ble]",
                                                   advertisedDevice->getAddress().toString().c_str(),
                                                   manufacturer_hex.c_str());
@@ -433,7 +450,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                                 if (flags != 0x00 && flags != 0x04)
                                 {
                                     is_this_a_phone = true;
-                                    Serial.printf(CLR_GREEN "%06lu %-11s B14 Apple " CLR_BBLUE "phone " CLR_BLUE "detected via Nearby Info (0x16)\n" CLR_RESET, millis() / 1000, "[ble]");
+                                    Serial.printf(CLR_GREEN "%06lu %-11s B14 " CLR_C190 "iPhone " CLR_BLUE "detected via Nearby Info (0x16)\n" CLR_RESET, millis() / 1000, "[ble]");
                                     break;
                                 }
                             }
@@ -461,10 +478,14 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                         if (data_len > 11)
                         {
                             is_this_a_phone = true;
+                            Serial.printf(CLR_MAG "%06lu %-11s B18 " CLR_C190 "Samsung phone " CLR_BLUE "detected via SmartThings\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                          millis() / 1000, "[ble]",
+                                          advertisedDevice->getAddress().toString().c_str(),
+                                          manufacturer_hex.c_str());
                         }
                     }
                 }
-                // 3. GOOGLE / ANDROID QUICK SHARE CHECK (Company ID: 0x00E0)
+                // 3. GOOGLE / ANDROID QUICK SHARE CHECK (Company ID: 0xE000)
                 else if (id0 == 0xE0 && id1 == 0x00)
                 {
                     // Google Quick Share broadcasts on 0x00E0.
@@ -473,7 +494,27 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                     if (data_len >= 10)
                     {
                         is_this_a_phone = true;
+                        Serial.printf(CLR_MAG "%06lu %-11s B18 " CLR_C190 "Android phone " CLR_BLUE "detected via Quick Share\n" CLR_C164 "%s %s\n" CLR_RESET,
+                                      millis() / 1000, "[ble]",
+                                      advertisedDevice->getAddress().toString().c_str(),
+                                      manufacturer_hex.c_str());
                     }
+                }
+                // 4. Check RSSI Level
+                if (advertisedDevice->getRSSI() < g_rssi_threshold)
+                {
+                    g_filtered_ble++;
+                    if (SHOW_DUPLICATES)
+                    {
+                        Serial.printf(CLR_BLUE "%06lu %-11s B17 " CLR_CYAN "BLE RSSI too low " CLR_C190 "%s %s " CLR_BLUE "%s " CLR_BBLUE "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                                      millis() / 1000, "[ble]",
+                                      advertisedDevice->getAddress().toString().c_str(),
+                                      manufacturer_hex.c_str(),
+                                      advertisedDevice->getName().c_str(),
+                                      is_this_a_phone ? "phone " : "",
+                                      advertisedDevice->getRSSI());
+                    }
+                    return;
                 }
             }
 
@@ -485,7 +526,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
             {
                 // bump the counters
                 g_new_ble++;
-                Serial.printf(CLR_BLUE "%06lu %-11s B1  " CLR_RED "NEW BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_BBLUE "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                Serial.printf(CLR_BLUE "%06lu %-11s B1  " CLR_RED "NEW BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
                               millis() / 1000, "[ble]",
                               advertisedDevice->getAddress().toString().c_str(),
                               manufacturer_hex.c_str(),
@@ -499,7 +540,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                 g_filtered_ble++;
                 if (SHOW_DUPLICATES)
                 {
-                    Serial.printf(CLR_BLUE "%06lu %-11s B13 " CLR_CYAN "DUP BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_BBLUE "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                    Serial.printf(CLR_BLUE "%06lu %-11s B13 " CLR_CYAN "DUP BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
                                   millis() / 1000, "[ble]",
                                   advertisedDevice->getAddress().toString().c_str(),
                                   manufacturer_hex.c_str(),
@@ -508,7 +549,6 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                                   advertisedDevice->getRSSI());
                 }
             }
-            // }
         }
     }
 };
@@ -589,13 +629,13 @@ static void burst_scan_task(void *)
                         const std::string ap_ssid(reinterpret_cast<const char *>(aps[i].ssid));
                         if (mac_upsert(buf, "", true, MacSource::WIFI, false, ap_ssid))
                         {
-                            Serial.printf(CLR_YELLOW "%06lu %-11s W7 " CLR_RED " NEW WiFi device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
+                            Serial.printf(CLR_YELLOW "%06lu %-11s W7  " CLR_RED "NEW WiFi device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                         }
                         else
                         {
                             g_filtered_wifi++;
                             if (SHOW_DUPLICATES)
-                                Serial.printf(CLR_YELLOW "%06lu %-11s W13" CLR_CYAN " DUP WiFi burst device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
+                                Serial.printf(CLR_YELLOW "%06lu %-11s W13 " CLR_CYAN "DUP WiFi burst device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                         }
                     }
                     free(aps);
@@ -737,9 +777,9 @@ void counter_dump_table()
         for (const auto &entry : g_macs)
         {
             const char *source_str = (entry.second.source == MacSource::WIFI) ? "wifi" : "ble";
-            const char *phone_suffix = entry.second.is_phone ? " phone" : "";
+            const char *phone_suffix = entry.second.is_phone ? "phone " : "";
             std::string name_suffix = entry.second.name.empty() ? "" : (" \"" + entry.second.name + "\"");
-            Serial.printf(CLR_GREEN "%06lu %-11s C9  %s  %s%s%s  age=%lus\n" CLR_RESET,
+            Serial.printf(CLR_GREEN "%06lu %-11s C9  " CLR_C164 "%s %s " CLR_C190 "%s " CLR_BLUE "%s age=%lus\n" CLR_RESET,
                           now / 1000, "[counter]",
                           entry.first.c_str(),
                           source_str,

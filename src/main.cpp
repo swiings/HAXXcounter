@@ -189,7 +189,7 @@ void loop()
         g_last_status_ms = now;
         CounterStats cs = counter_pop_stats();
         Serial.printf(
-            "%06lu %-11s S3  count=%u +wifi=%u/%u +ble=%u/%u phones=%u -evicted=%u ignored=%u"
+            "%06lu %-11s S3  count=%u +wifi=%u/%u +ble=%u/%u phones=%u evicted=%u ignored=%u"
             " mode=%s ch=%u bat=%d%% %s\n",
             now / 1000, "[status]", counter_get(),
             cs.new_wifi, cs.live_wifi, cs.new_ble, cs.live_ble, cs.live_phones, cs.evicted,
