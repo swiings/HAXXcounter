@@ -245,7 +245,7 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
     if (pkt->rx_ctrl.rssi < g_rssi_threshold)
     {
         g_filtered_wifi++;
-        if (SHOW_DUPLICATES)
+        if (SHOW_DETAILS)
             Serial.printf(CLR_YELLOW "%06lu %-11s W14 " CLR_CYAN "WiFi RSSI too low " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET,
                           millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
         return;
@@ -262,7 +262,7 @@ static void IRAM_ATTR wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
     {
         // duplicate sighting, already in the mac table
         g_filtered_wifi++;
-        if (SHOW_DUPLICATES)
+        if (SHOW_DETAILS)
             Serial.printf(CLR_YELLOW "%06lu %-11s W12 " CLR_CYAN "DUP WiFi device " CLR_C164 "%s " CLR_YELLOW "rssi=%4d\n" CLR_RESET, millis() / 1000, "[wifi]", buf18, pkt->rx_ctrl.rssi);
     }
 }
@@ -310,20 +310,17 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
 
         std::string device_name = advertisedDevice->haveName() ? advertisedDevice->getName() : "Unknown device";
         std::string macAddress = advertisedDevice->getAddress().toString();
-
+        std::string manufacturer_data = advertisedDevice->haveManufacturerData() ? advertisedDevice->getManufacturerData() : "";
+        const std::string manufacturer_hex = manufacturer_data_to_key(manufacturer_data); // for logging/debugging purposes
+        size_t data_len = manufacturer_data.length();
         bool is_this_a_phone = false;
 
         if (advertisedDevice->haveManufacturerData())
         {
-            std::string manufacturer_data = advertisedDevice->haveManufacturerData() ? advertisedDevice->getManufacturerData() : "";
-            const std::string manufacturer_hex = manufacturer_data_to_key(manufacturer_data); // for logging/debugging purposes
-
-            size_t data_len = manufacturer_data.length();
 
             // Manufacturer data must contain at least 2 bytes for the Company ID
             if (data_len >= 2)
             {
-
                 uint8_t id0 = get_byte(manufacturer_data, 0);
                 uint8_t id1 = get_byte(manufacturer_data, 1);
 
@@ -342,11 +339,14 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                         uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
 
                         is_this_a_phone = true;
-                        Serial.printf(CLR_BLUE "%06lu %-11s B15 " CLR_C190 "Apple personal device " CLR_BLUE "detected " CLR_C164 "%s %s action:0x%02X subtype:0x%02X\n" CLR_RESET,
-                                      millis() / 1000, "[ble]",
-                                      advertisedDevice->getAddress().toString().c_str(),
-                                      manufacturer_hex.c_str(),
-                                      applePacketType, appleActionSubType);
+                        if (SHOW_DETAILS)
+                        {
+                            Serial.printf(CLR_BLUE "%06lu %-11s B15 " CLR_C190 "Apple personal device " CLR_BLUE "detected " CLR_C164 "%s %s action:0x%02X subtype:0x%02X\n" CLR_RESET,
+                                          millis() / 1000, "[ble]",
+                                          advertisedDevice->getAddress().toString().c_str(),
+                                          manufacturer_hex.c_str(),
+                                          applePacketType, appleActionSubType);
+                        }
                     }
 
                     //     // CRITICAL PROTECTION: Prevent length overflows and infinite loops
@@ -495,8 +495,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                 else if (id0 == 0xE0 && id1 == 0x00)
                 {
                     // Google Quick Share broadcasts on 0x00E0.
-                    // Simple Android beacons/tags are tiny, while Quick Share/Fast Pair frameworks
-                    // require extended metadata payloads.
+                    // Simple Android beacons/tags are tiny, while Quick Share/Fast Pair frameworks require extended metadata payloads.
                     if (data_len >= 10)
                     {
                         is_this_a_phone = true;
@@ -506,32 +505,59 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                                       manufacturer_hex.c_str());
                     }
                 }
-                // 4. Check RSSI Level
-                if (advertisedDevice->getRSSI() < g_rssi_threshold)
+                // 4. Check for Android Fast Pair / Wearables (Google UUID 0xFE2C)
+                else if (advertisedDevice->haveServiceUUID())
                 {
-                    g_filtered_ble++;
-                    if (SHOW_DUPLICATES)
-                    {
-                        Serial.printf(CLR_BLUE "%06lu %-11s B17 " CLR_CYAN "BLE RSSI too low " CLR_C190 "%s %s " CLR_BLUE "%s " CLR_BBLUE "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
-                                      millis() / 1000, "[ble]",
-                                      advertisedDevice->getAddress().toString().c_str(),
-                                      manufacturer_hex.c_str(),
-                                      advertisedDevice->getName().c_str(),
-                                      is_this_a_phone ? "phone " : "",
-                                      advertisedDevice->getRSSI());
-                    }
-                    return;
+                    if (advertisedDevice->getServiceUUID().toString() == "0000fe2c-0000-1000-8000-00805f9b34fb")
+                        is_this_a_phone = true;
                 }
             }
-
-            // Write this MAC to the MAC table and add to the counts.
-            // If a manufacturer payload is present, it becomes the dedupe identity so
-            // a rotating BLE random address from the same handset is not counted twice.
-            if (mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data, true,
-                           MacSource::BLE, is_this_a_phone))
+        }
+        else
+        {
+            // no manufacturer data on device
+            is_this_a_phone = false;
+            if (SHOW_DETAILS)
             {
-                // bump the counters
-                g_new_ble++;
+                Serial.printf(CLR_BLUE "%06lu %-11s B19 " CLR_CYAN "No Manufacturer Data on device " CLR_C164 "%s %s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                              millis() / 1000, "[ble]",
+                              advertisedDevice->getAddress().toString().c_str(),
+                              advertisedDevice->getName().c_str(),
+                              is_this_a_phone ? "phone " : "",
+                              advertisedDevice->getRSSI());
+            }
+        }
+
+        // 4. Fallback: Check if it uses a Randomized Private MAC Address (Most mobile phones/wearables randomize, static IoT tech usually does not)
+        if (advertisedDevice->getAddressType() == 1) // random mac address?
+            is_this_a_phone = true;                  // is a personal device if true
+
+        // 5. Check RSSI Level to see if over threshold
+        if (advertisedDevice->getRSSI() < g_rssi_threshold)
+        {
+            g_filtered_ble++;
+            if (SHOW_DETAILS)
+            {
+                Serial.printf(CLR_BLUE "%06lu %-11s B17 " CLR_CYAN "BLE RSSI too low " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                              millis() / 1000, "[ble]",
+                              advertisedDevice->getAddress().toString().c_str(),
+                              manufacturer_hex.c_str(),
+                              advertisedDevice->getName().c_str(),
+                              is_this_a_phone ? "phone " : "",
+                              advertisedDevice->getRSSI());
+            }
+            return; // exit early if RSSI is below threshold
+        }
+
+        // Write this MAC to the MAC table and add to the counts.
+        // If a manufacturer payload is present, it becomes the dedupe identity so
+        // a rotating BLE random address from the same handset is not counted twice.
+        if (mac_upsert(advertisedDevice->getAddress().toString(), manufacturer_data, true, MacSource::BLE, is_this_a_phone))
+        {
+            // bump the counters
+            g_new_ble++;
+            if (SHOW_DETAILS)
+            {
                 Serial.printf(CLR_BLUE "%06lu %-11s B1  " CLR_RED "NEW BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
                               millis() / 1000, "[ble]",
                               advertisedDevice->getAddress().toString().c_str(),
@@ -540,20 +566,20 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                               is_this_a_phone ? "phone " : "",
                               advertisedDevice->getRSSI());
             }
-            else
+        }
+        else
+        {
+            // already exists in the mac table, a duplicate sighting
+            g_filtered_ble++;
+            if (SHOW_DETAILS)
             {
-                // already exists in the mac table, a duplicate sighting
-                g_filtered_ble++;
-                if (SHOW_DUPLICATES)
-                {
-                    Serial.printf(CLR_BLUE "%06lu %-11s B13 " CLR_CYAN "DUP BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
-                                  millis() / 1000, "[ble]",
-                                  advertisedDevice->getAddress().toString().c_str(),
-                                  manufacturer_hex.c_str(),
-                                  advertisedDevice->getName().c_str(),
-                                  is_this_a_phone ? "phone " : "",
-                                  advertisedDevice->getRSSI());
-                }
+                Serial.printf(CLR_BLUE "%06lu %-11s B13 " CLR_CYAN "DUP BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
+                              millis() / 1000, "[ble]",
+                              advertisedDevice->getAddress().toString().c_str(),
+                              manufacturer_hex.c_str(),
+                              advertisedDevice->getName().c_str(),
+                              is_this_a_phone ? "phone " : "",
+                              advertisedDevice->getRSSI());
             }
         }
     }
@@ -640,7 +666,7 @@ static void burst_scan_task(void *)
                         else
                         {
                             g_filtered_wifi++;
-                            if (SHOW_DUPLICATES)
+                            if (SHOW_DETAILS)
                                 Serial.printf(CLR_YELLOW "%06lu %-11s W13 " CLR_CYAN "DUP WiFi burst device " CLR_C164 "%s " CLR_YELLOW "%s\n" CLR_RESET, millis() / 1000, "[wifi]", buf, aps[i].ssid);
                         }
                     }

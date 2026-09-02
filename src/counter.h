@@ -28,14 +28,14 @@ enum class ScanMode {
 extern ScanMode CURRENT_SCAN_MODE;
 
 /** RSSI threshold — frames weaker than this value are ignored.
- *  -50 = same room only  |  -70 = medium (default)  |  -90 = through walls */
-constexpr int RSSI_DEFAULT =  -110;
-constexpr int RSSI_MIN     =  -110;
+ *  -50 = same room only  |  -70 = medium  |  -100 = through walls */
+constexpr int RSSI_DEFAULT =  -100;
+constexpr int RSSI_MIN     =  -100;
 constexpr int RSSI_MAX     =  -50;  
 constexpr int RSSI_STEP    =   10;
 
-/** show/hide the duplicate messages in the serial log */
-constexpr bool SHOW_DUPLICATES = false;
+/** show/hide the detail messages in the serial log */
+constexpr bool SHOW_DETAILS = false;
 
 /** Per-interval discovery stats, consumed by counter_pop_stats(). */
 struct CounterStats {

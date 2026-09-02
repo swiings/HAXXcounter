@@ -68,9 +68,9 @@ static uint32_t g_hold_start_ms = 0;
 static bool     g_in_long_press = false;
 
 /* Brightness levels — cycles dim→bright, wraps */
-static const uint8_t k_brightness[]  = {10, 30, 55, 80, 105, 130, 160, 190, 220, 255};
-static const int     k_num_levels    = 10;
-static int           g_bright_idx    = 2;    /* start at 55 */
+static const uint8_t k_brightness[]  = {0, 40, 80, 120, 160, 200, 255};
+static const int     k_num_levels    = 7;
+static int           g_bright_idx    = 3;    /* start at 120 */
 static int           g_bright_dir    = -1;   /* -1 = dimming, +1 = brightening */
 
 /* -------------------------------------------------------------------------

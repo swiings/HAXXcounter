@@ -16,3 +16,6 @@ __pycache__/
 *.py[cod]
 Logs/
 save/
+
+# Local design files, not published with the source repository
+Docs/
