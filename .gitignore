@@ -11,6 +11,10 @@ scripts/.build_number
 .Spotlight-V100
 .Trashes
 
+# VS Code settings and workspace files
+vscode/
+claude/
+
 # Python
 __pycache__/
 *.py[cod]
