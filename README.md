@@ -1,5 +1,8 @@
 # HAXXcounter
 
+<img width="768" height="1024" alt="437A1B17-C389-4947-9CC7-85FDB370E0C0_1_105_c" src="https://github.com/user-attachments/assets/1f36220a-08e6-448f-bf8a-0c639025c490" />
+
+
 HAXXcounter is a handheld nearby-device counter for the Waveshare ESP32-S3-Touch-AMOLED-1.8. It passively observes Bluetooth Low Energy (BLE) advertisements and Wi-Fi management traffic, shows a deduplicated count on the AMOLED display, and can alert when the count changes.
 
 This is an experimental proximity signal counter, not a people-counting system. A device may represent one person, several devices may belong to one person, and some nearby devices will not advertise or probe while they are idle.
