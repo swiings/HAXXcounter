@@ -348,128 +348,6 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                                           applePacketType, appleActionSubType);
                         }
                     }
-
-                    //     // CRITICAL PROTECTION: Prevent length overflows and infinite loops
-                    //     if (packetLength == 0 || (index + 2 + packetLength) > data_len)
-                    //     {
-                    //         Serial.printf(CLR_RED "%06lu %-11s B5  malformed Apple manufacturer data: length=%zu, index=%zu, packetLength=%u\n" CLR_RESET,
-                    //                       millis() / 1000, "[ble]", data_len, index, packetLength);
-                    //         break;
-                    //     }
-
-                    //     // Apple (0x4C) parsing loop
-                    //     if (applePacketType == 0x07)
-                    //     {
-                    //         is_this_a_phone = true;
-                    //         Serial.printf(CLR_BLUE "%06lu %-11s B11 " CLR_C190 "iPhone " CLR_BLUE "detected via AirPods (0x07)\n" CLR_C164 "%s %s\n" CLR_RESET,
-                    //                       millis() / 1000, "[ble]",
-                    //                       advertisedDevice->getAddress().toString().c_str(),
-                    //                       manufacturer_hex.c_str());
-                    //         break;
-                    //     }
-
-                    //     if (applePacketType == 0x10)
-                    //     {
-                    //         uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
-                    //         // Serial.printf(CLR_BLUE "%06lu %-11s B15 " CLR_BLUE "before Phone test" CLR_C164 "%s %s " CLR_BLUE "Apple action type==0x%02X : subtype=0x%02X\n" CLR_RESET,
-                    //         //               millis() / 1000, "[ble]",
-                    //         //               advertisedDevice->getAddress().toString().c_str(),
-                    //         //               manufacturer_hex.c_str(),
-                    //         //               applePacketType, appleActionSubType);
-
-                    //         if (appleActionSubType == 0x02 || // Screen locked
-                    //             appleActionSubType == 0x07 || // Active User / Screen On
-                    //             appleActionSubType == 0x09 || // Active User / Video/Media Focus
-                    //             appleActionSubType == 0x05 || // Audio Playing / Screen Locked:
-                    //             appleActionSubType == 0x08 || // Wi-Fi Password Sharing
-                    //             appleActionSubType == 0x3D || // (UWB) Spatial Proximity
-                    //             appleActionSubType == 0x03 || // Idle User
-                    //             appleActionSubType == 0x0F || // Nearby Action Trigger
-                    //             appleActionSubType == 0x4D || // Universal Clipboard:
-                    //             appleActionSubType == 0x01)   // Activity Reporting Disabled)
-                    //         {
-                    //             is_this_a_phone = true;
-                    //             Serial.printf(CLR_BLUE "%06lu %-11s B15 " CLR_C190 "Apple personal device " CLR_BLUE "detected " CLR_C164 "%s %s action:0x%02X subtype:0x%02X\n" CLR_RESET,
-                    //                           millis() / 1000, "[ble]",
-                    //                           advertisedDevice->getAddress().toString().c_str(),
-                    //                           manufacturer_hex.c_str(),
-                    //                           applePacketType, appleActionSubType);
-                    //             break;
-                    //         }
-                    //         // Note: 0x09 (Find My) is excluded here because MacBooks, AirTags, and iPads all broadcast it.
-                    //         // Serial.printf(CLR_GREEN "%06lu %-11s B9  Apple packet type==0x%02X : subtype=0x%02X\n" CLR_RESET,
-                    //         //               millis() / 1000, "[ble]", applePacketType, appleActionSubType);
-                    //     }
-                    //     else if (applePacketType == 0x12) // Proximity Beacon
-                    //     {
-                    //         uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
-                    //         // Serial.printf(CLR_GREEN "%06lu %-11s B12 Apple packet type==0x%02X : subtype=0x%02X\n" CLR_RESET,
-                    //         //               millis() / 1000, "[ble]", applePacketType, appleActionSubType);
-
-                    //         if (packetLength == 2)
-                    //         {
-                    //             uint8_t deviceClass = get_byte(manufacturer_data, index + 2);
-                    //             if (deviceClass == 0xD0 || deviceClass == 0xD4)
-                    //             {
-                    //                 is_this_a_phone = false;
-                    //                 Serial.printf(CLR_BLUE "%06lu %-11s B16 " CLR_BLUE "signal detected from deviceclass:0x%02X and applePacketType:0x%02X\n" CLR_C164 "%s %s\n" CLR_RESET,
-                    //                               millis() / 1000, "[ble]",
-                    //                               deviceClass,
-                    //                               applePacketType,
-                    //                               advertisedDevice->getAddress().toString().c_str(),
-                    //                               manufacturer_hex.c_str());
-                    //                 break;
-                    //             }
-                    //         }
-                    //         else if (packetLength >= 15)
-                    //         {
-                    //             // Long 0x12 packets (like your 25-byte hits) are usually iPhones tracking state,
-                    //             // but let's make sure it isn't an Apple Watch setup stream
-                    //             uint8_t streamType = get_byte(manufacturer_data, index + 2);
-                    //             if (streamType != 0xD0)
-                    //             {
-                    //                 is_this_a_phone = true;
-                    //                 Serial.printf(CLR_MAG "%06lu %-11s B6  " CLR_C190 "iPhone " CLR_BLUE "detected via Long Proximity\n" CLR_C164 "%s %s\n" CLR_RESET,
-                    //                               millis() / 1000, "[ble]",
-                    //                               advertisedDevice->getAddress().toString().c_str(),
-                    //                               manufacturer_hex.c_str());
-                    //                 break;
-                    //             }
-                    //         }
-                    //         else
-                    //         {
-                    //             Serial.printf(CLR_RED "%06lu %-11s B10 malformed Apple Proximity Beacon data: length=%zu, index=%zu, packetLength=%u\n" CLR_RESET,
-                    //                           millis() / 1000, "[ble]", data_len, index, packetLength);
-                    //         }
-                    //     }
-                    //     else if (applePacketType == 0x16) // Nearby Info
-                    //     {
-                    //         uint8_t appleActionSubType = get_byte(manufacturer_data, index + 2);
-                    //         // Serial.printf(CLR_GREEN "%06lu %-11s B12 Apple packet type==0x%02X : subtype=0x%02X\n" CLR_RESET,
-                    //         //               millis() / 1000, "[ble]", applePacketType, appleActionSubType);
-
-                    //         if (packetLength == 8)
-                    //         {
-                    //             uint8_t flags = get_byte(manufacturer_data, index + 2);
-                    //             // On a MacBook or AppleTV, the primary Nearby Info byte is highly predictable (typically 0x00 or 0x04).
-                    //             // iPhones shifting states usually broadcast a dynamic bitmask (like 0x20, 0x1C, 0x0C).
-                    //             if (flags != 0x00 && flags != 0x04)
-                    //             {
-                    //                 is_this_a_phone = true;
-                    //                 Serial.printf(CLR_GREEN "%06lu %-11s B14 " CLR_C190 "iPhone " CLR_BLUE "detected via Nearby Info (0x16)\n" CLR_RESET, millis() / 1000, "[ble]");
-                    //                 break;
-                    //             }
-                    //         }
-                    //         else
-                    //         {
-                    //             Serial.printf(CLR_RED "%06lu %-11s B11 malformed Apple Nearby Info data: length=%zu, index=%zu, packetLength=%u\n" CLR_RESET,
-                    //                           millis() / 1000, "[ble]", data_len, index, packetLength);
-                    //         }
-                    //     }
-
-                    //     // Advance safely inside the boundaries
-                    //     index += 2 + packetLength;
-                    // }
                 }
                 // 2. SAMSUNG CHECK (Company ID: 0x0075)
                 else if (id0 == 0x75 && id1 == 0x00 && data_len >= 4)
@@ -505,7 +383,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                                       manufacturer_hex.c_str());
                     }
                 }
-                // 4. Check for Android Fast Pair / Wearables (Google UUID 0xFE2C)
+                // 4. Android Fast Pair / Wearables (Google UUID 0xFE2C)
                 else if (advertisedDevice->haveServiceUUID())
                 {
                     if (advertisedDevice->getServiceUUID().toString() == "0000fe2c-0000-1000-8000-00805f9b34fb")
@@ -556,8 +434,8 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
         {
             // bump the counters
             g_new_ble++;
-            if (SHOW_DETAILS)
-            {
+            // if (SHOW_DETAILS)
+            // {
                 Serial.printf(CLR_BLUE "%06lu %-11s B1  " CLR_RED "NEW BLE device " CLR_C164 "%s %s " CLR_BLUE "%s " CLR_C190 "%s" CLR_BLUE "rssi:%4d" CLR_RESET "\n",
                               millis() / 1000, "[ble]",
                               advertisedDevice->getAddress().toString().c_str(),
@@ -565,7 +443,7 @@ class HAXXScanCallbacks : public NimBLEScanCallbacks
                               advertisedDevice->getName().c_str(),
                               is_this_a_phone ? "phone " : "",
                               advertisedDevice->getRSSI());
-            }
+            // }
         }
         else
         {
