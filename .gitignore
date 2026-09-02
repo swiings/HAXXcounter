@@ -12,8 +12,8 @@ scripts/.build_number
 .Trashes
 
 # VS Code settings and workspace files
-vscode/
-claude/
+.vscode/
+.claude/
 
 # Python
 __pycache__/
