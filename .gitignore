@@ -24,3 +24,6 @@ save/
 # Local design files, not published with the source repository
 Docs/
 .vscode/c_cpp_properties.json
+
+# Exceptions
+!Docs/person-counting-design.md

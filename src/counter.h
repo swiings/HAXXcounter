@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <atomic>
+#include "person_estimator.h"
 
 /** Auto-incremented by scripts/bump_build_number.py on every PlatformIO build */
 #ifndef BUILD_NUMBER
@@ -12,7 +13,7 @@ constexpr uint32_t HAXXCOUNTER_BUILD_NUMBER = BUILD_NUMBER;
 #define HAXXCOUNTER_STRINGIFY(x) HAXXCOUNTER_STRINGIFY_(x)
 
 /** HAXXcounter Build Version — trailing component is HAXXCOUNTER_BUILD_NUMBER */
-constexpr const char *HAXXCOUNTER_VERSION = "v0.13." HAXXCOUNTER_STRINGIFY(BUILD_NUMBER);
+constexpr const char *HAXXCOUNTER_VERSION = "v0.14." HAXXCOUNTER_STRINGIFY(BUILD_NUMBER);
 
 /** Sliding-window duration in milliseconds (60 s) */
 constexpr uint32_t DEDUP_WINDOW_MS   = 60'000;
@@ -21,9 +22,12 @@ constexpr uint32_t DEDUP_WINDOW_MS   = 60'000;
 constexpr uint32_t BURST_INTERVAL_MS =  60'000;
 
 /** WiFi/BLE scanning mode — All devices or just people devices */
-enum class ScanMode {
-    ALL_DEVICES,
-    PEOPLE_DEVICES
+enum class ScanMode : uint8_t {
+    ALL_DEVICES = 0,
+    PERSONAL_DEVICES = 1,
+    PHONES = 2,
+    PEOPLE_ESTIMATE = 3,
+    BUCKET_COUNT = 4
 };
 extern ScanMode CURRENT_SCAN_MODE;
 
@@ -35,7 +39,10 @@ constexpr int RSSI_MAX     =  -50;
 constexpr int RSSI_STEP    =   10;
 
 /** show/hide the detail messages in the serial log */
-constexpr bool SHOW_DETAILS = false;
+constexpr bool SHOW_DETAILS = true;
+
+/** per-advertisement BLE DUP / low-RSSI lines; very noisy with duplicate reporting on */
+constexpr bool SHOW_BLE_DUPS = false;
 
 /** Per-interval discovery stats, consumed by counter_pop_stats(). */
 struct CounterStats {
@@ -53,7 +60,7 @@ struct CounterStats {
 };
 
 void counter_init();
-uint32_t counter_get();
+uint32_t counter_get(uint8_t bucket_id);
 void counter_tick();
 const char *counter_mode_label();
 
@@ -66,5 +73,9 @@ void counter_set_rssi(int dbm);
 /** Returns the current RSSI threshold in dBm. */
 int  counter_get_rssi();
 
-/** Print every MAC-table entry and its age to the serial log (PWR long press). */
-void counter_dump_table();
+/** Experimental grouped-person estimate alongside its device and pair diagnostics. */
+PersonEstimate counter_get_people();
+
+/** Print every MAC-table entry and its age to the serial log (PWR long press).
+ *  Returns the log timestamp (millis()/10) of the dump, for matching test notes to the log. */
+uint32_t counter_dump_table();

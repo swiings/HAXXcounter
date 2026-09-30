@@ -414,14 +414,16 @@ void ui_flash_tick() {
     }
 }
 
-void ui_show_alert_overlay(const char *text) {
+void ui_show_alert_overlay(const char *text, uint32_t duration_ms) {
     if (!g_alert_box) return;
     lv_obj_move_foreground(g_alert_box);
     lv_label_set_text(g_alert_label, text);
     lv_obj_clear_flag(g_alert_box, LV_OBJ_FLAG_HIDDEN);
-    if (g_alert_timer) lv_timer_reset(g_alert_timer);
-    else {
-        g_alert_timer = lv_timer_create(alert_hide_cb, 2000, nullptr);
+    if (g_alert_timer) {
+        lv_timer_set_period(g_alert_timer, duration_ms);
+        lv_timer_reset(g_alert_timer);
+    } else {
+        g_alert_timer = lv_timer_create(alert_hide_cb, duration_ms, nullptr);
         lv_timer_set_repeat_count(g_alert_timer, 1);
     }
 }

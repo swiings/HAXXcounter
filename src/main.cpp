@@ -26,7 +26,7 @@ static void battery_init()
 {
     /* Wire is already initialised by display_init(); pass -1 to skip re-init */
     g_pmu_ok = PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, -1, -1);
-    Serial.printf("%06lu %-11s P1  AXP2101: %s\n", millis() / 1000, "[battery]", g_pmu_ok ? "found" : "not found");
+    Serial.printf("%06lu %-11s P1  AXP2101: %s\n", millis() / 10, "[battery]", g_pmu_ok ? "found" : "not found");
 }
 
 static void battery_refresh()
@@ -64,15 +64,16 @@ static void button_poll()
             g_screen_locked = !g_screen_locked;
             display_set_touch_enabled(!g_screen_locked);
             ui_show_alert_overlay(g_screen_locked ? "SCREEN LOCKED" : "SCREEN UNLOCKED");
-            Serial.printf("%06lu %-11s B3  screen touch %s\n", millis() / 1000,
+            Serial.printf("%06lu %-11s B3  screen touch %s\n", millis() / 10,
                           "[button]", g_screen_locked ? "locked" : "unlocked");
         }
         else
         {
-            CURRENT_SCAN_MODE = (CURRENT_SCAN_MODE == ScanMode::ALL_DEVICES) ? ScanMode::PEOPLE_DEVICES : ScanMode::ALL_DEVICES;
+            CURRENT_SCAN_MODE = static_cast<ScanMode>(
+                (static_cast<uint8_t>(CURRENT_SCAN_MODE) + 1) % static_cast<uint8_t>(ScanMode::BUCKET_COUNT));
             ui_set_footer(counter_mode_label());
-            Serial.printf("%06lu %-11s B2  scan mode set to %s\n", millis() / 1000,
-                          "[button]", (CURRENT_SCAN_MODE == ScanMode::ALL_DEVICES) ? "ALL_DEVICES" : "PEOPLE_DEVICES");
+            Serial.printf("%06lu %-11s B2  scan mode set to %s\n", millis() / 10,
+                          "[button]", counter_mode_label());
         }
     }
     g_btn_last = btn;
@@ -96,7 +97,9 @@ static void pwr_button_poll()
 
     if (long_irq)
     {
-        counter_dump_table();
+        char text[24];
+        snprintf(text, sizeof(text), "DUMP %06lu", (unsigned long)counter_dump_table());
+        ui_show_alert_overlay(text, 4000);
     }
     else if (short_irq)
     {
@@ -140,7 +143,7 @@ void setup()
     esp_log_level_set("i2c.master", ESP_LOG_NONE);
     esp_log_level_set("esp32-hal-i2c-ng.c", ESP_LOG_NONE);
     esp_log_level_set("Wire.cpp", ESP_LOG_NONE);
-    Serial.printf("\n%06lu %-11s S1  HAXXcounter %s booting\n", millis() / 1000, "[status]", HAXXCOUNTER_VERSION);
+    Serial.printf("\n%06lu %-11s S1  HAXXcounter %s booting\n", millis() / 10, "[status]", HAXXCOUNTER_VERSION);
 
     pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
     display_init(); /* initialises I2C */
@@ -167,7 +170,7 @@ void setup()
     ui_update_battery_indicator(battery_percent(), battery_charging());
 
     Serial.printf("%06lu %-11s S2  HAXXcounter %s ready  RSSI: %d dBm  battery: %d%%\n",
-                  millis() / 1000, "[status]", HAXXCOUNTER_VERSION, counter_get_rssi(), battery_percent());
+                  millis() / 10, "[status]", HAXXCOUNTER_VERSION, counter_get_rssi(), battery_percent());
 }
 
 static uint32_t g_last_battery_ms = 0;
@@ -182,7 +185,7 @@ void loop()
     button_poll();
     pwr_button_poll();
     gesture_poll();
-    const uint32_t cur_count = counter_get();
+    const uint32_t cur_count = counter_get(static_cast<uint8_t>(CURRENT_SCAN_MODE));
     ui_set_count(cur_count);
     alert_tick(cur_count);
     ui_flash_tick();
@@ -206,11 +209,13 @@ void loop()
     {
         g_last_status_ms = now;
         CounterStats cs = counter_pop_stats();
+        const PersonEstimate pe = counter_get_people();
         Serial.printf(
-            "%06lu %-11s S3  count=%u +wifi=%u/%u +ble=%u/%u phones=%u evicted=%u ignored=%u"
+            "%06lu %-11s S3  count=%u +wifi=%u/%u +ble=%u/%u phones=%u people~%u/%u evicted=%u ignored=%u"
             " mode=%s ch=%u bat=%d%% %s\n",
-            now / 1000, "[status]", counter_get(),
-            cs.new_wifi, cs.live_wifi, cs.new_ble, cs.live_ble, cs.live_phones, cs.evicted,
+            now / 10, "[status]", counter_get(static_cast<uint8_t>(CURRENT_SCAN_MODE)),
+            cs.new_wifi, cs.live_wifi, cs.new_ble, cs.live_ble, cs.live_phones,
+            pe.people, pe.devices, cs.evicted,
             cs.filtered_wifi + cs.filtered_ble,
             counter_mode_label(), cs.channel, battery_percent(),
             alert_mode_label());

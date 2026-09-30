@@ -25,4 +25,4 @@ void ui_trigger_flash();
 void ui_flash_tick();
 
 /** Brief centred overlay showing the current alert mode.  Auto-hides 2 s. */
-void ui_show_alert_overlay(const char *text);
+void ui_show_alert_overlay(const char *text, uint32_t duration_ms = 2000);
