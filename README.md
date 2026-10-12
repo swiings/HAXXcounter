@@ -155,6 +155,3 @@ include/
 scripts/                PlatformIO build helpers
 ```
 
-## License
-
-No license is currently declared for this repository. Add a license file before distributing or accepting external contributions.
